@@ -16,9 +16,9 @@ let serieA = [
   { name: 'Torino' },
   { name: 'Parma' },
   { name: 'Hellas Verona' },
-  { name: 'Spezia' },
-  { name: 'Benevento' },
-  { name: 'Crotone' }
+  { name: 'Palermo' },
+  { name: 'Bari' },
+  { name: 'Vicenza' }
 ];
 
 let serieB = [
@@ -36,7 +36,7 @@ let serieB = [
   { name: 'Cremonese' },
   { name: 'SPAL' },
   { name: 'Reggina' },
-  { name: 'Vicenza' },
+  { name: 'Triestina' },
   { name: 'Cosenza' },
   { name: 'Entella' },
   { name: 'Reggiana' },
@@ -46,12 +46,12 @@ let serieB = [
 
 let serieC = [
   { name: 'Avellino' },
-  { name: 'Palermo' },
+  { name: 'Benevento' },
   { name: 'Catania' },
   { name: 'Ternana' },
   { name: 'Lecco' },
   { name: 'Padova' },
-  { name: 'Bari' },
+  { name: 'Cesena' },
   { name: 'Modena' },
   { name: 'Perugia' },
   { name: 'Alessandria' },
@@ -62,7 +62,7 @@ let serieC = [
   { name: 'Pro Patria' },
   { name: 'Piacenza' },
   { name: 'Lucchese' },
-  { name: 'Triestina' },
+  { name: 'Livorno' },
   { name: 'Pescara' },
   { name: 'Messina' },
 ];
@@ -277,6 +277,7 @@ function displayStandings(standingsA) {
   const container = document.getElementById('serieA');
   const standingsDiv = document.createElement('div');
   standingsDiv.innerHTML = '<h2>Classifica</h2>';
+  standingsDiv.id = 'classificaA';
 
   // Converti l'oggetto in un array di oggetti, includendo il nome della squadra
   const standingsArray = Object.entries(standingsA).map(([name, stats]) => ({ name, ...stats }));
@@ -300,6 +301,7 @@ function displayStandingsB(standingsB) {
   const container = document.getElementById('serieB');
   const standingsDiv = document.createElement('div');
   standingsDiv.innerHTML = '<h2>Classifica</h2>';
+  standingsDiv.id = 'classificaB';
 
   // Converti l'oggetto in un array di oggetti, includendo il nome della squadra
   const standingsArray = Object.entries(standingsB).map(([name, stats]) => ({ name, ...stats }));
@@ -324,6 +326,7 @@ function displayStandingsC(standingsC) {
   const container = document.getElementById('serieC');
   const standingsDiv = document.createElement('div');
   standingsDiv.innerHTML = '<h2>Classifica</h2>';
+  standingsDiv.id = 'classificaC';
 
   // Converti l'oggetto in un array di oggetti, includendo il nome della squadra
   const standingsArray = Object.entries(standingsC).map(([name, stats]) => ({ name, ...stats }));
