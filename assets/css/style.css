@@ -210,6 +210,15 @@ th {
     letter-spacing: var(--tracking-label);
 }
 
+.standings-table {
+    table-layout: fixed;
+}
+
+.standings-table th:first-child,
+.standings-table td:first-child {
+    width: 24%;
+}
+
 .promotion-zone {
     background-color: var(--color-promotion-bg);
     /* Verde chiaro */
@@ -541,23 +550,32 @@ details[open] summary::after {
 /* Righe clickabili nel database */
 .db-row-clickable { cursor: pointer; }
 .db-row-clickable:hover { background: var(--bg-hover-row); }
-.player-name-link { color: var(--color-link); text-decoration: underline dotted; }
+.player-name-link { color: var(--color-link); text-decoration: none; cursor: pointer; }
 
 /* Scheda giocatore */
 .player-card-overlay {
     position: fixed; inset: 0;
     background: rgba(0,0,0,0.55);
     display: flex; align-items: center; justify-content: center;
-    z-index: 3000;
+    /* Deve stare sempre sopra le finestre di mercato (.mm-overlay, z-index 8000):
+       cliccando un giocatore dentro una sessione di mercato la scheda deve aprirsi
+       davanti, non dietro — un div fixed a schermo intero sopra blocca anche
+       l'interazione con la finestra di mercato sottostante finché resta aperta. */
+    z-index: 8500;
 }
 .player-card-box {
     background: var(--bg-default);
     border-radius: var(--radius-2xl);
     padding: 24px 28px;
     min-width: 380px; max-width: 560px; width: 90%;
+    max-height: 85vh;
+    box-sizing: border-box;
     position: relative;
     box-shadow: var(--shadow-card);
+    display: flex; flex-direction: column;
+    overflow: hidden;
 }
+.player-card-scroll { overflow-y: auto; padding-right: 4px; }
 .player-card-close {
     position: absolute; top: 12px; right: 14px;
     background: none; border: none; font-size: 1.2rem;
@@ -627,7 +645,7 @@ details[open] summary::after {
 }
 .mm-box {
   background: var(--bg-default); border-radius: var(--radius-3xl);
-  width: 100%; max-width: 680px; max-height: 88vh;
+  width: 100%; max-width: 800px; max-height: 88vh;
   display: flex; flex-direction: column;
   box-shadow: var(--shadow-heavy);
   overflow: hidden;
@@ -638,6 +656,16 @@ details[open] summary::after {
 }
 .mm-title { font-size: var(--text-lg); font-weight: var(--font-bold); }
 .mm-budget { font-size: var(--text-base); color: #acd; }
+.mm-budget-slider {
+  padding: 10px 22px; background: var(--bg-subtle); border-bottom: 2px solid var(--border-subtle); flex-shrink: 0;
+}
+.mm-budget-slider-row {
+  display: flex; align-items: center; gap: 12px; font-size: 0.85rem; color: var(--text-primary);
+}
+.mm-budget-slider-row input[type="range"] {
+  flex: 1; accent-color: var(--color-primary); cursor: pointer;
+}
+.mm-budget-slider-note { font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; }
 .mm-tabs {
   display: flex; border-bottom: 2px solid var(--border-subtle);
   flex-shrink: 0; background: var(--bg-subtle);
@@ -655,7 +683,29 @@ details[open] summary::after {
   border-radius: var(--radius-pill); font-size: 0.72rem; padding: 0 6px; margin-left: 4px;
 }
 .mm-content { flex: 1; overflow-y: auto; padding: 14px 18px; }
+.mm-content table th:first-child,
+.mm-content table td:first-child { min-width: 132px; white-space: nowrap; }
 .mm-empty { color: var(--text-muted); font-style: italic; text-align: center; padding: 24px 0; }
+.mm-section-title {
+  display: flex; align-items: center; gap: 8px;
+  margin: 20px 2px 10px; padding-top: 14px;
+  border-top: 1px solid var(--border-subtle, #e2e5eb);
+  font-size: 0.88rem; font-weight: var(--font-bold); color: var(--text-primary);
+}
+.mm-section-title:first-child { margin-top: 2px; padding-top: 0; border-top: none; }
+.mm-section-count {
+  background: #e8eef8; color: var(--color-link);
+  padding: 1px 8px; border-radius: 999px; font-size: 0.76rem; font-weight: var(--font-semi);
+}
+.mm-seg-group { display: flex; gap: 4px; }
+.mm-seg {
+  border: 1px solid var(--border-subtle, #e2e5eb); background: var(--bg-default, #fff);
+  color: var(--text-secondary, #555); padding: 3px 10px; border-radius: 999px;
+  font-size: 0.78rem; font-weight: var(--font-semi); cursor: pointer;
+  transition: background var(--transition-base, .15s), color var(--transition-base, .15s);
+}
+.mm-seg:hover:not(.active) { background: #eef2fb; }
+.mm-seg.active { background: var(--color-link); color: #fff; border-color: var(--color-link); }
 .mm-row {
   display: flex; justify-content: space-between; align-items: center;
   padding: 11px 14px; border-radius: var(--radius-lg); margin-bottom: 7px;
@@ -671,6 +721,7 @@ details[open] summary::after {
   padding: 1px 7px; border-radius: var(--radius-sm); font-size: 0.78rem; font-weight: var(--font-semi);
 }
 .mm-salary-chg, .mm-buyer-tag, .mm-from-tag { color: var(--text-secondary); font-size: 0.82rem; }
+.mm-salary-tag { color: var(--color-success-dark); font-size: 0.82rem; font-weight: var(--font-semi); }
 .mm-free-tag { color: var(--color-success-dark); font-size: 0.82rem; font-weight: var(--font-semi); }
 .mm-price { font-size: var(--text-md); color: var(--text-primary); white-space: nowrap; }
 .mm-acts { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
@@ -680,6 +731,12 @@ details[open] summary::after {
 }
 .mm-btn:active:not(:disabled) { transform: scale(0.97); }
 .mm-btn:disabled { opacity: 0.45; cursor: default; }
+.rosa-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+.rosa-panel-row td {
+  background: var(--bg-subtle-alt); padding: 10px 14px; text-align: left;
+  border-top: none; font-size: 0.85rem;
+}
+.rosa-panel-row .mm-btn { margin-left: 8px; }
 .mm-green { background: var(--color-success); color: var(--bg-default); }
 .mm-green:hover:not(:disabled) { background: var(--color-success-dark); }
 .mm-red   { background: var(--color-danger); color: var(--bg-default); }
@@ -825,7 +882,11 @@ details[open] summary::after {
   padding: 2px 0;
 }
 .md-oop {
-  color: #999;
+  color: #a15c00;
+  font-style: italic;
+}
+.md-oor {
+  color: #b91c1c;
   font-style: italic;
 }
 .md-role-badge {
@@ -842,6 +903,9 @@ details[open] summary::after {
   font-size: 0.7rem;
   color: var(--color-warning);
 }
+.md-oor-tag {
+  color: #b91c1c;
+}
 .md-ovr {
   font-size: 0.72rem;
   color: var(--bg-default);
@@ -850,6 +914,12 @@ details[open] summary::after {
   padding: 1px 4px;
   font-weight: var(--font-bold);
   margin-left: auto;
+}
+.md-ovr-oop { background: #a15c00; }
+.md-ovr-oor { background: #b91c1c; }
+.md-forma {
+  font-size: 0.72rem;
+  margin-left: 6px;
 }
 .md-status-tag {
   font-size: 0.7rem;
