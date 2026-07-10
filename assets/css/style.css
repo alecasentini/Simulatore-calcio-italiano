@@ -493,6 +493,12 @@ details[open] summary::after {
     width: 95vw;
 }
 
+/* ─── SCHEDA SQUADRA (dalla classifica) ──────────────────────────────────── */
+.team-details-modal-content {
+    max-width: 1060px;
+    width: 95vw;
+}
+
 .db-tabs {
     display: flex;
     gap: 8px;
@@ -551,6 +557,16 @@ details[open] summary::after {
 .db-row-clickable { cursor: pointer; }
 .db-row-clickable:hover { background: var(--bg-hover-row); }
 .player-name-link { color: var(--color-link); text-decoration: none; cursor: pointer; }
+.nat-flag {
+    display: inline-block;
+    width: 20px;
+    height: 14px;
+    object-fit: cover;
+    border-radius: 2px;
+    border: 1px solid rgba(0,0,0,0.2);
+    vertical-align: middle;
+    cursor: default;
+}
 
 /* Scheda giocatore */
 .player-card-overlay {
@@ -645,7 +661,7 @@ details[open] summary::after {
 }
 .mm-box {
   background: var(--bg-default); border-radius: var(--radius-3xl);
-  width: 100%; max-width: 800px; max-height: 88vh;
+  width: 100%; max-width: 1060px; max-height: 88vh;
   display: flex; flex-direction: column;
   box-shadow: var(--shadow-heavy);
   overflow: hidden;
@@ -683,8 +699,11 @@ details[open] summary::after {
   border-radius: var(--radius-pill); font-size: 0.72rem; padding: 0 6px; margin-left: 4px;
 }
 .mm-content { flex: 1; overflow-y: auto; padding: 14px 18px; }
-.mm-content table th:first-child,
-.mm-content table td:first-child { min-width: 132px; white-space: nowrap; }
+/* Naz. è la prima colonna (bandierina), Nome è la seconda: il min-width per
+   evitare l'a-capo del nome va sulla seconda colonna, non più sulla prima. */
+.mm-content table th:nth-child(2),
+.mm-content table td:nth-child(2) { min-width: 132px; white-space: nowrap; }
+.col-naz { width: 34px; text-align: center; padding-left: 6px !important; padding-right: 6px !important; white-space: nowrap; }
 .mm-empty { color: var(--text-muted); font-style: italic; text-align: center; padding: 24px 0; }
 .mm-section-title {
   display: flex; align-items: center; gap: 8px;
