@@ -4055,6 +4055,23 @@ function finishSeason() {
   displayCoppaItalia(s_coppaResult);
 
   seasonCount++;
+
+  // Archivia le statistiche della stagione appena conclusa (anno per anno,
+  // anche le stagioni senza presenze) SUBITO qui, prima che il mercato estivo
+  // (updateTeamStrengths, in fase 4) sposti i giocatori in una nuova squadra —
+  // altrimenti un giocatore acquistato a fine stagione risulterebbe con le
+  // presenze/gol/assist della stagione appena giocata attribuiti alla squadra
+  // di ARRIVO invece che a quella con cui li ha realmente segnati.
+  [...serieA, ...serieB, ...serieC].forEach(team => {
+    team.roster.forEach(p => {
+      p.statsHistory = p.statsHistory || [];
+      p.statsHistory.push({
+        season: seasonCount, team: team.name, league: team.leagueLevel,
+        appearances: p.seasonAppearances || 0, goals: p.seasonGoals || 0, assists: p.seasonAssists || 0,
+        conceded: p.role === 'POR' ? (p.seasonConceded || 0) : null,
+      });
+    });
+  });
   championsHistory.push({
     season: seasonCount,
     serieA: getWinner(standingsA),
@@ -4111,23 +4128,12 @@ document.getElementById('simulaStagione').addEventListener('click', function () 
       pendingPreContracts = [];
     }
 
-    // Archivia le statistiche della stagione appena conclusa (anno per anno,
-    // anche le stagioni senza presenze), poi resetta i contatori stagionali e la disponibilità.
-    // seasonCount === 0 solo al primissimo avvio (nessuna stagione ancora giocata): non archiviare nulla.
+    // Resetta i contatori stagionali e la disponibilità per la nuova stagione
+    // (l'archiviazione in statsHistory della stagione appena conclusa avviene
+    // ormai prima, in finishSeason(), quando i giocatori sono ancora nella
+    // squadra con cui hanno realmente giocato — vedi commento lì).
     [...serieA, ...serieB, ...serieC].forEach(team => {
       team.roster.forEach(p => {
-        const presenze = p.seasonAppearances || 0;
-        const gol = p.seasonGoals || 0;
-        const assist = p.seasonAssists || 0;
-        const subiti = p.seasonConceded || 0;
-        if (seasonCount > 0) {
-          p.statsHistory = p.statsHistory || [];
-          p.statsHistory.push({
-            season: seasonCount, team: team.name, league: team.leagueLevel,
-            appearances: presenze, goals: gol, assists: assist,
-            conceded: p.role === 'POR' ? subiti : null,
-          });
-        }
         p.seasonGoals = 0;
         p.seasonAssists = 0;
         p.seasonAppearances = 0;
