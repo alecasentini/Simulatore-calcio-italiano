@@ -3582,7 +3582,7 @@ function runWinterAITransfers() {
       team.roster.push(player);
       team.budget -= cand.cost;
       recalculateTeamStrength(team);
-      transferLog.push(`❄️🔭 <em>Mercato invernale</em>: <strong>${team.name}</strong> acquista ${player.firstName} ${player.lastName} da <strong>${cand.fromClub}</strong> per <strong>${cand.cost.toFixed(1)}M€</strong> — scovato dall'area scout`);
+      transferLog.push(`❄️ <em>Mercato invernale</em>: <strong>${team.name}</strong> acquista ${player.firstName} ${player.lastName} (${player.age} anni, Forza: ${player.strength}) da <strong>${cand.fromClub}</strong> per <strong>${cand.cost.toFixed(1)}M€</strong>`);
     }
   });
 
@@ -3622,7 +3622,7 @@ function durationSelectHtml(dataAttr, id, selectedYears) {
   return `<select ${dataAttr}="${id}" style="padding:3px 6px;border-radius:4px;border:1px solid var(--border-card);font-size:.78rem">${opts}</select>`;
 }
 
-function buildFilterBar(f) {
+function buildFilterBar(f, showScoutSeg) {
   const opt = (val, label) => `<option value="${val}"${f.role === val ? ' selected' : ''}>${label}</option>`;
   const seg = (val, label) => `<button type="button" class="mm-seg${(f.availability || 'all') === val ? ' active' : ''}" data-avail="${val}">${label}</button>`;
   return `<div class="mm-filters" style="margin-bottom:10px;padding:8px 10px;background:#f5f5f5;border:1px solid #ddd;border-radius:6px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;font-size:.82rem">
@@ -3641,7 +3641,7 @@ function buildFilterBar(f) {
       <input type="number" data-filter="strMax" value="${f.strMax}" min="0" max="100" style="width:52px">
     </label>
     <button class="mm-btn" data-action="filter-reset" style="padding:2px 10px;font-size:.8rem">Reset</button>
-    <div class="mm-seg-group" style="margin-left:auto">${seg('all', 'Tutti')}${seg('market', '🛒 Sul mercato')}${seg('free', '🆓 Svincolati')}</div>
+    <div class="mm-seg-group" style="margin-left:auto">${seg('all', 'Tutti')}${seg('market', '🛒 Sul mercato')}${seg('free', '🆓 Svincolati')}${showScoutSeg ? seg('scout', '🌍 Area Scout') : ''}</div>
   </div>`;
 }
 
@@ -4986,7 +4986,7 @@ function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newS
       team.roster.push(player);
       team.budget -= cand.cost;
       recalculateTeamStrength(team);
-      transferLog.push(`🔭 <strong>${team.name}</strong> acquista ${player.firstName} ${player.lastName} da <strong>${cand.fromClub}</strong> per <strong>${cand.cost.toFixed(1)}M€</strong> — scovato dall'area scout`);
+      transferLog.push(`💰 <strong>${team.name}</strong> acquista ${player.firstName} ${player.lastName} (${player.age} anni, Forza: ${player.strength}) da <strong>${cand.fromClub}</strong> per <strong>${cand.cost.toFixed(1)}M€</strong>`);
     }
   });
 
@@ -5908,17 +5908,46 @@ function showManagerMarketModal(onConfirm) {
   };
 
   const buildAcquistiTab = () => {
-    let html = buildFilterBar(filter);
-
-    // ── Sezione Area Scout: talenti stranieri (solo Serie A) ────────────────
-    const foreignTargets = pendingForeignScoutTargets
+    // Talenti stranieri scovati dall'area scout (solo Serie A) — candidati
+    // per la nuova sezione "🌍 Area Scout" dei filtri (indipendente dal filtro
+    // attivo, serve solo a decidere se mostrare il segmento).
+    const allForeignTargets = pendingForeignScoutTargets
       .map((t, idx) => ({ t, idx }))
-      .filter(({ t }) => canPlayerSignMore(playerTeam) && matchesFilter(t, filter));
+      .filter(({ t }) => canPlayerSignMore(playerTeam));
 
-    if (foreignTargets.length > 0) {
+    let html = buildFilterBar(filter, allForeignTargets.length > 0);
+    const avail = filter.availability || 'all';
+    const foreignTargets = allForeignTargets.filter(({ t }) => matchesFilter(t, filter));
+
+    // ── Mercato + Svincolati ───────────────────────────────────────────────
+    // "Sul mercato" (vista Mercato) = SOLO i giocatori realmente messi in vendita
+    // dalle squadre (pendingTransferMarket, curato dalle trattative AI).
+    // "Tutti" (vista di default) = TUTTI i giocatori di tutte le altre squadre,
+    // acquistabili al loro valore di trasferimento anche se non "in vendita".
+    const strCap = leagueStrCap(playerTeam.leagueLevel);
+    const preContractedIds = new Set(pendingPreContracts.map(pc => pc.player.id));
+    const eligible = item => !boughtIds.has(item.player.id) && !preContractedIds.has(item.player.id) && item.player.strength <= strCap && canPlayerSignMore(playerTeam) && canTeamAcquirePlayer(playerTeam, item.player) && matchesFilter(item.player, filter);
+    const marketOnlyItems = pendingTransferMarket.filter(eligible);
+    const allClubItems = [...serieA, ...serieB, ...serieC]
+      .filter(t => t !== playerTeam)
+      .flatMap(t => t.roster.map(p => ({ player: p, fromTeam: t, askingPrice: getTransferValue(p) })))
+      .filter(eligible);
+    const mktItems = avail === 'scout' ? [] : (avail === 'market' ? marketOnlyItems : allClubItems)
+      .sort((a, b) => b.player.strength - a.player.strength);
+    const mktSectionTitle = avail === 'market' ? '🛒 Sul mercato' : '👥 Tutti i giocatori';
+    const faItems = avail === 'scout' ? [] : freeAgents
+      .filter(p => !boughtIds.has(p.id) && !preContractedIds.has(p.id) && p.strength <= strCap && canPlayerSignMore(playerTeam) && canTeamAcquirePlayer(playerTeam, p) && matchesFilter(p, filter))
+      .sort((a, b) => b.strength - a.strength)
+      .slice(0, 40);
+
+    if (!mktItems.length && !faItems.length && !foreignTargets.length) {
+      html += '<p class="mm-empty">Nessun giocatore corrisponde ai filtri selezionati.</p>';
+      return html;
+    }
+
+    if (avail === 'scout' && foreignTargets.length > 0) {
       const atCap = !canBuyForeignPlayer(playerTeam);
-      html += `<div style="margin-bottom:16px;padding:10px;background:#eef7ff;border-radius:8px;border:1px solid #bcdcfb">`;
-      html += `<h4 style="margin:0 0 8px;font-size:0.92rem">🔭 L'area scout ha scovato i seguenti giocatori stranieri...</h4>`;
+      html += `<div class="mm-section-title">🌍 Area Scout <span class="mm-section-count">${foreignTargets.length}</span></div>`;
       if (atCap) {
         html += `<p class="mm-empty">Hai già ${FOREIGN_ROSTER_CAP} stranieri in rosa: hai raggiunto il tetto massimo per la Serie A.</p>`;
       }
@@ -5926,7 +5955,7 @@ function showManagerMarketModal(onConfirm) {
         const canAfford = playerTeam.budget >= t.cost;
         const overCap = !wageCapAllows(playerTeam, t.salary);
         const label = atCap ? '🚫 Tetto stranieri' : overCap ? '🚫 Monte ingaggi' : canAfford ? 'Acquista' : 'Fondi insuff.';
-        html += `<div class="mm-row" style="background:#fffde7">
+        html += `<div class="mm-row">
           <div class="mm-pinfo">
             ${formatNationality(t)}<span class="mm-name">${t.firstName} ${t.lastName}</span>
             <span class="mm-badge role-${t.role}">${t.role}</span>
@@ -5944,38 +5973,10 @@ function showManagerMarketModal(onConfirm) {
             </button>
           </div></div>`;
       });
-      html += `</div>`;
     }
 
-    // ── Mercato + Svincolati ───────────────────────────────────────────────
-    // "Sul mercato" (vista Mercato) = SOLO i giocatori realmente messi in vendita
-    // dalle squadre (pendingTransferMarket, curato dalle trattative AI).
-    // "Tutti" (vista di default) = TUTTI i giocatori di tutte le altre squadre,
-    // acquistabili al loro valore di trasferimento anche se non "in vendita".
-    const strCap = leagueStrCap(playerTeam.leagueLevel);
-    const preContractedIds = new Set(pendingPreContracts.map(pc => pc.player.id));
-    const avail = filter.availability || 'all';
-    const eligible = item => !boughtIds.has(item.player.id) && !preContractedIds.has(item.player.id) && item.player.strength <= strCap && canPlayerSignMore(playerTeam) && canTeamAcquirePlayer(playerTeam, item.player) && matchesFilter(item.player, filter);
-    const marketOnlyItems = pendingTransferMarket.filter(eligible);
-    const allClubItems = [...serieA, ...serieB, ...serieC]
-      .filter(t => t !== playerTeam)
-      .flatMap(t => t.roster.map(p => ({ player: p, fromTeam: t, askingPrice: getTransferValue(p) })))
-      .filter(eligible);
-    const mktItems = (avail === 'market' ? marketOnlyItems : allClubItems)
-      .sort((a, b) => b.player.strength - a.player.strength);
-    const mktSectionTitle = avail === 'market' ? '🛒 Sul mercato' : '🌍 Tutti i giocatori';
-    const faItems = freeAgents
-      .filter(p => !boughtIds.has(p.id) && !preContractedIds.has(p.id) && p.strength <= strCap && canPlayerSignMore(playerTeam) && canTeamAcquirePlayer(playerTeam, p) && matchesFilter(p, filter))
-      .sort((a, b) => b.strength - a.strength)
-      .slice(0, 40);
-
-    if (!mktItems.length && !faItems.length && !foreignTargets.length) {
-      html += '<p class="mm-empty">Nessun giocatore corrisponde ai filtri selezionati.</p>';
-      return html;
-    }
-
-    const showMarket = avail !== 'free';
-    const showFree = avail !== 'market';
+    const showMarket = avail !== 'free' && avail !== 'scout';
+    const showFree = avail !== 'market' && avail !== 'scout';
     if (showMarket && mktItems.length > 0) {
       html += `<div class="mm-section-title">${mktSectionTitle} <span class="mm-section-count">${mktItems.length}</span></div>`;
       mktItems.forEach(item => {
@@ -6008,7 +6009,7 @@ function showManagerMarketModal(onConfirm) {
           </div></div>`;
       });
     }
-    if (!(showMarket && mktItems.length > 0) && !(showFree && faItems.length > 0) && !foreignTargets.length) {
+    if (!(showMarket && mktItems.length > 0) && !(showFree && faItems.length > 0) && !(avail === 'scout' && foreignTargets.length > 0)) {
       html += '<p class="mm-empty">Nessun giocatore in questa vista.</p>';
     }
     return html;
@@ -6172,7 +6173,7 @@ function showManagerMarketModal(onConfirm) {
             playerTeam.roster.push(player);
             playerTeam.budget -= t.cost;
             recalculateTeamStrength(playerTeam);
-            transferLog.push(`🔭 <strong>${playerTeam.name}</strong> acquista ${player.firstName} ${player.lastName} da <strong>${t.fromClub}</strong> per <strong>${t.cost.toFixed(1)}M€</strong> — scovato dall'area scout (sconto import -${Math.round(t.discount * 100)}%)`);
+            transferLog.push(`🔄 <strong>${t.fromClub}</strong> → <strong>${playerTeam.name}</strong>: ${player.firstName} ${player.lastName} (${player.age} anni, Forza: ${player.strength}) per <strong>${t.cost.toFixed(1)}M€</strong>`);
             pendingForeignScoutTargets = pendingForeignScoutTargets.filter((_, i) => i !== candIdx);
           }
         } else if (action === 'fire-coach') {
