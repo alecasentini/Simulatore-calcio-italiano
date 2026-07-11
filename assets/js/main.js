@@ -761,28 +761,28 @@ function retiredPlayerToStaff(player) {
 
 // Moltiplicatore di forza per quanto bene un giocatore si adatta allo slot
 // schierato: pieno se è nel suo ruolo E sottoruolo, penalizzato altrimenti.
-const FIT_STRENGTH_MULT = { position: 1, outOfPosition: 0.8, outOfRole: 0.70 };
+const FIT_STRENGTH_MULT = { position: 1, outOfPosition: 0.95, outOfRole: 0.90 };
 
-// Seleziona i migliori 11 per il modulo dell'allenatore.
-// Ritorna array di { player, inPosition, fit }. `fit` distingue tre casi:
-// 'position' (ruolo E sottoruolo giusti, 100% forza), 'outOfPosition' (ruolo
-// giusto ma sottoruolo sbagliato, es. terzino schierato da centrale — 80%
-// forza) e 'outOfRole' (ruolo sbagliato, es. centrocampista adattato in difesa
-// — 70% forza, invariato). `inPosition` resta true per 'position'/'outOfPosition'
-// (ruolo corretto) e false solo per 'outOfRole' — mantenuto per compatibilità
-// con countCorrectSubRolePlacements/countOutOfPosition, che ragionano solo sul ruolo.
+// Seleziona i migliori 11 per il modulo dell'allenatore, massimizzando la
+// SOMMA TOTALE di forza effettiva schierata (non più "prendi gli 11 più
+// forti in assoluto e poi sistema i sottoruoli come viene"). Ritorna array
+// di { player, inPosition, fit }. `fit` distingue tre casi: 'position'
+// (ruolo E sottoruolo giusti, 100% forza), 'outOfPosition' (ruolo giusto ma
+// sottoruolo sbagliato, es. terzino schierato da centrale — 95% forza) e
+// 'outOfRole' (ruolo sbagliato, es. centrocampista adattato in difesa — 90%
+// forza). `inPosition` resta true per 'position'/'outOfPosition' (ruolo
+// corretto) e false solo per 'outOfRole' — mantenuto per compatibilità con
+// countCorrectSubRolePlacements/countOutOfPosition, che ragionano sul ruolo.
 function getBest11(roster, formationName) {
   const slots = { ...(FORMATIONS[formationName] || FORMATIONS['4-4-2']) };
   const subroleSlots = FORMATION_SUBROLES[formationName] || FORMATION_SUBROLES['4-4-2'];
   const result = [];
   const used = new Set();
 
-  // Prima passata: per ogni ruolo, riempi gli slot con chi è più forte fra
-  // chi può ancora coprire una posizione richiesta dal modulo — specialisti
-  // e versatili competono alla pari sulla forza, nessuno dei due è
-  // privilegiato a priori. Un giocatore viene scartato solo se il tipo di
-  // slot che sa coprire è già stato saturato da qualcun altro più forte di
-  // lui. Il portiere non ha sottoruoli: si sceglie per pura forza.
+  // Prima passata: per ogni ruolo, riempi gli slot con la combinazione di
+  // giocatori (e relativa assegnazione ai sottoruoli) che dà la somma di
+  // forza più alta — non necessariamente "gli N più forti in assoluto". Il
+  // portiere non ha sottoruoli: si sceglie per pura forza, nessuna ambiguità.
   for (const role of ['POR', 'DIF', 'CEN', 'ATT']) {
     let needed = slots[role] || 0;
     const inRolePool = roster
@@ -800,47 +800,74 @@ function getBest11(roster, formationName) {
     } else {
       inRolePool.forEach(ensureSubRoles);
       const totalNeeded = neededSubroles.length;
-
-      // Prima si sceglie CHI gioca — i migliori `totalNeeded` per forza
-      // effettiva, indipendentemente dal sottoruolo (un giocatore fuori
-      // posizione contribuisce comunque all'80% della sua forza, quasi sempre
-      // meglio di schierare un titolare più debole solo per farlo calzare).
-      // POI si assegna il sottoruolo in modo ottimale fra i selezionati, con
-      // la stessa logica greedy di countCorrectSubRolePlacements: gli
-      // specialisti esatti coprono per primi il proprio slot, i versatili
-      // riempiono quel che resta. Un'unica scansione interlacciata (come la
-      // versione precedente) sceglieva il tipo del versatile arbitrariamente
-      // (il primo libero in ordine di inserimento) invece che in base a quale
-      // scelta lascia più specialisti sistemabili — poteva lasciare un
-      // giocatore forte "fuori posizione" mentre un compagno più debole dello
-      // stesso tipo restava libero, con lo slot dell'altro tipo mai coperto
-      // dal verstile disponibile.
-      const topN = inRolePool.slice(0, totalNeeded);
       const [typeA, typeB] = SUB_ROLES[role];
-      let needA = neededSubroles.filter(s => s === typeA).length;
-      let needB = neededSubroles.filter(s => s === typeB).length;
-      const onlyA = topN.filter(p => p.subRoles.includes(typeA) && !p.subRoles.includes(typeB));
-      const onlyB = topN.filter(p => p.subRoles.includes(typeB) && !p.subRoles.includes(typeA));
-      const both = topN.filter(p => p.subRoles.includes(typeA) && p.subRoles.includes(typeB));
+      const needA = neededSubroles.filter(s => s === typeA).length;
+      const needB = neededSubroles.filter(s => s === typeB).length;
 
-      const positioned = new Set();
-      onlyA.forEach(p => { if (needA > 0) { positioned.add(p); needA--; } });
-      onlyB.forEach(p => { if (needB > 0) { positioned.add(p); needB--; } });
-      both.forEach(p => {
-        if (needA > 0) { positioned.add(p); needA--; }
-        else if (needB > 0) { positioned.add(p); needB--; }
-      });
+      // Assegna un gruppo di giocatori già scelto ai sottoruoli: gli
+      // specialisti esatti coprono per primi il proprio slot (per forza),
+      // i versatili riempiono quel che resta, e chi non trova comunque il
+      // proprio sottoruolo va negli slot avanzati (fuori posizione).
+      const assignSubroles = (players) => {
+        let na = needA, nb = needB;
+        const assigned = new Map();
+        const onlyA = players.filter(p => p.subRoles.includes(typeA) && !p.subRoles.includes(typeB));
+        const onlyB = players.filter(p => p.subRoles.includes(typeB) && !p.subRoles.includes(typeA));
+        const both = players.filter(p => p.subRoles.includes(typeA) && p.subRoles.includes(typeB));
+        onlyA.forEach(p => { if (na > 0) { assigned.set(p, typeA); na--; } });
+        onlyB.forEach(p => { if (nb > 0) { assigned.set(p, typeB); nb--; } });
+        both.forEach(p => {
+          if (na > 0) { assigned.set(p, typeA); na--; }
+          else if (nb > 0) { assigned.set(p, typeB); nb--; }
+        });
+        players.forEach(p => {
+          if (assigned.has(p)) return;
+          if (na > 0) { assigned.set(p, typeA); na--; }
+          else if (nb > 0) { assigned.set(p, typeB); nb--; }
+        });
+        return assigned;
+      };
 
-      topN.forEach(p => {
-        result.push({ player: p, inPosition: true, fit: positioned.has(p) ? 'position' : 'outOfPosition' });
+      // Punto di partenza: i totalNeeded più forti (come prima), poi una
+      // passata di scambio corregge la selezione quando conviene di più
+      // panchinare un titolare "fuori posizione" a favore di uno specialista
+      // più debole ma perfettamente piazzato — che a volte rende di più alla
+      // somma totale (lo scarto fuori posizione è solo del 5%, quindi basta
+      // un divario di forza minimo fra i due per invertire la convenienza).
+      let chosen = inRolePool.slice(0, totalNeeded);
+      let assigned = assignSubroles(chosen);
+      let improved = true;
+      while (improved) {
+        improved = false;
+        for (const p of chosen) {
+          const type = assigned.get(p);
+          if (p.subRoles.includes(type)) continue; // già a suo agio, niente da migliorare
+          const misfitValue = getPlayerEffectiveStrength(p) * FIT_STRENGTH_MULT.outOfPosition;
+          const bestOutside = inRolePool
+            .filter(q => !chosen.includes(q) && q.subRoles.includes(type))
+            .sort((a, b) => getPlayerEffectiveStrength(b) - getPlayerEffectiveStrength(a))[0];
+          if (bestOutside && getPlayerEffectiveStrength(bestOutside) > misfitValue) {
+            chosen = chosen.filter(q => q !== p).concat(bestOutside);
+            assigned = assignSubroles(chosen);
+            improved = true;
+            break; // ricalcola da capo dopo ogni scambio
+          }
+        }
+      }
+
+      chosen.forEach(p => {
+        const type = assigned.get(p);
+        result.push({ player: p, inPosition: true, fit: p.subRoles.includes(type) ? 'position' : 'outOfPosition' });
         used.add(p.id);
       });
-      needed -= topN.length;
+      needed -= chosen.length;
     }
     slots[role] = needed; // quanti slot rimangono vuoti
   }
 
-  // Seconda passata: slot vuoti → riempi con i migliori disponibili (fuori ruolo)
+  // Seconda passata: slot vuoti → riempi con i migliori disponibili (fuori
+  // ruolo) — qui lo sconto è uniforme per chiunque, quindi ordinare per
+  // forza resta già ottimale, nessuno scambio necessario.
   for (const role of ['POR', 'DIF', 'CEN', 'ATT']) {
     let needed = slots[role];
     if (!needed) continue;
@@ -914,14 +941,6 @@ function countCorrectSubRolePlacements(best11, formationName) {
   return correct; // 0-10
 }
 
-// Bonus di forza per lo schieramento tattico: cresce gradualmente con quanti
-// giocatori (su 10 di movimento) sono nel sottoruolo giusto per il modulo,
-// fino al massimo con la formazione perfetta (10/10).
-const MAX_SUBROLE_BONUS = 6;
-function getTacticalSubRoleBonus(best11, formationName) {
-  return (countCorrectSubRolePlacements(best11, formationName) / 10) * MAX_SUBROLE_BONUS;
-}
-
 // ─── FORMA (condizione fisica 0-100%) ─────────────────────────────────────────
 // Ogni giocatore parte a 100% a inizio stagione, cala di 1% per ogni partita
 // giocata e recupera 5% per ogni giornata di riposo. La forza effettiva in
@@ -945,7 +964,7 @@ function formatForma(p) {
 
 // Forza effettiva della squadra: media pesata dei migliori 11 disponibili + apporto allenatore.
 // I giocatori fuori posizione (ruolo giusto, sottoruolo sbagliato) contribuiscono
-// all'80% della loro forza; quelli fuori ruolo, al 70% (vedi FIT_STRENGTH_MULT).
+// al 95% della loro forza; quelli fuori ruolo, al 90% (vedi FIT_STRENGTH_MULT).
 function getEffectiveStrength(team) {
   if (!team.roster || !team.roster.length) return team.strength || 50;
   const available = filterAvailableRoster(team.roster);
@@ -956,7 +975,7 @@ function getEffectiveStrength(team) {
     const eff = getPlayerEffectiveStrength(player);
     return sum + eff * FIT_STRENGTH_MULT[fit];
   }, 0);
-  const base = total / best11.length + getTacticalSubRoleBonus(best11, formationName);
+  const base = total / best11.length;
   if (!team.coach) return Math.max(1, Math.min(100, base));
   const mod = (team.coach.strength - 50) / 4.2; // -12 a +12
   return Math.max(1, Math.min(100, base + mod));
@@ -2204,8 +2223,7 @@ function showTeamDetailsModal(teamName) {
     const formationName = team.coach.formation || '4-4-2';
     const best11 = getBest11(team.roster, formationName);
     const correct = countCorrectSubRolePlacements(best11, formationName);
-    const bonus = getTacticalSubRoleBonus(best11, formationName);
-    tacticalFitHtml = ` — Piazzamento tattico: <strong>${correct}/10</strong> (+${bonus.toFixed(1)} forza)`
+    tacticalFitHtml = ` — Piazzamento tattico: <strong>${correct}/10</strong>`
       + `<br><span style="font-size:.8rem;color:#666">Posizioni richieste dal ${formationName}: ${formatFormationRequirements(formationName)}</span>`;
   }
 
@@ -2888,6 +2906,11 @@ function startCareerMarketSession() {
 }
 
 function leaveTeamAsDS() {
+  // Ricorda la squadra appena lasciata: generateDSJobOffers la esclude dalle
+  // prossime offerte (non ha senso corteggiarti di nuovo un secondo dopo che
+  // te ne sei andato). Si aggiorna a ogni "partenza", quindi non blocca per
+  // sempre quella squadra — solo finché non se ne lascia un'altra.
+  if (playerTeam && dsCareer) dsCareer.lastTeamName = playerTeam.name;
   if (playerTeam && playerTeam.ds && playerTeam.ds.isHuman) playerTeam.ds = null;
   playerTeam = null;
   if (dsCareer) dsCareer.teamName = null;
@@ -2909,50 +2932,123 @@ function resolvePendingRenewalsAI(team) {
   recalculateTeamStrength(team);
 }
 
-// Etichetta obiettivo stimata dal rank di forza nella lega (stessa logica di setObjectives)
-function estimateObjectiveLabel(team) {
+// Rank di un club nella propria lega (per forza) — usato sia per l'etichetta
+// obiettivo sia per il tier di ambizione delle offerte di lavoro. Calcolato al
+// volo (non da team.objective, valorizzato solo da setObjectives a inizio
+// stagione) così resta valido anche prima che la prima stagione sia partita.
+function getLeagueRankInfo(team) {
   const league = team.leagueLevel === 'A' ? serieA : team.leagueLevel === 'B' ? serieB : serieC;
   const rank = [...league].sort((a, b) => b.strength - a.strength).indexOf(team) + 1;
-  const n = league.length;
-  if (rank <= 3) return 'Titolo/top 3';
-  if (rank <= Math.floor(n * 0.4)) return 'Metà alta';
-  if (rank <= Math.floor(n * 0.75)) return 'Metà classifica';
-  return 'Salvezza';
+  return { rank, n: league.length };
+}
+// Tier di ambizione DENTRO la propria lega (1=Salvezza .. 4=Titolo/Promozione),
+// stessa logica di setObjectives. Serie A resta a fasce percentuali (top3 /
+// 40% / 75%); Serie B e C (20 squadre ciascuna) usano invece fasce fisse da 5
+// posizioni, su richiesta esplicita dell'utente.
+function objectiveTierFromRank(rank, n, league) {
+  if (league === 'A') {
+    if (rank <= 3) return 4;
+    if (rank <= Math.floor(n * 0.4)) return 3;
+    if (rank <= Math.floor(n * 0.75)) return 2;
+    return 1;
+  }
+  if (rank <= 5) return 4;
+  if (rank <= 10) return 3;
+  if (rank <= 15) return 2;
+  return 1;
+}
+function estimateObjectiveLabel(team) {
+  const { rank, n } = getLeagueRankInfo(team);
+  const tier = objectiveTierFromRank(rank, n, team.leagueLevel);
+  if (team.leagueLevel !== 'A') return tier === 4 ? 'Promozione' : tier === 3 ? 'Metà alta' : tier === 2 ? 'Metà classifica' : 'Salvezza';
+  return tier === 4 ? 'Titolo/top 3' : tier === 3 ? 'Metà alta' : tier === 2 ? 'Metà classifica' : 'Salvezza';
+}
+// Tier di ambizione GLOBALE (1-12: Salvezza C=1 .. Titolo/top3 A=12): combina
+// lega (C=+0, B=+4, A=+8) e tier interno alla lega (1-4, objectiveTierFromRank).
+function estimateObjectiveGlobalTier(team) {
+  const { rank, n } = getLeagueRankInfo(team);
+  const leagueBase = team.leagueLevel === 'A' ? 8 : team.leagueLevel === 'B' ? 4 : 0;
+  return leagueBase + objectiveTierFromRank(rank, n, team.leagueLevel);
 }
 
-// Genera le offerte di lavoro per il DS umano in base alla reputazione
-// Numero minimo di offerte garantite quando il DS cerca lavoro (avvio
-// carriera, disoccupazione, sondaggio di mercato, corteggiamento AI).
-const MIN_DS_JOB_OFFERS = 4;
+// Genera le offerte di lavoro per il DS umano in base alla reputazione.
+// La reputazione parte da 40 (JOB_OFFER_REP_BASE) e il tetto è 100: un range
+// di 60 punti diviso in scaglioni da 5 (JOB_OFFER_REP_STEP) fa esattamente 12
+// scaglioni, uno per ciascuno dei 12 obiettivi possibili (4 per lega). Ogni
+// scaglione di reputazione corrisponde quindi a UN SOLO obiettivo — sotto i
+// 40 si resta fermi al primo scaglione (Salvezza di Serie C).
+const JOB_OFFER_REP_BASE = 40;
+const JOB_OFFER_REP_STEP = 5;
+function getCurrentObjectiveTier(rep) {
+  return Math.max(1, Math.min(12, Math.floor((rep - JOB_OFFER_REP_BASE) / JOB_OFFER_REP_STEP) + 1));
+}
+
+// Numero di offerte mostrate quando il DS cerca lavoro (avvio carriera,
+// disoccupazione, sondaggio di mercato, corteggiamento AI) — tutte squadre
+// del tier di obiettivo corrispondente alla reputazione attuale.
+const MIN_DS_JOB_OFFERS = 5;
 
 function generateDSJobOffers() {
   const rep = dsCareer.reputation;
-  let pool;
-  if (rep < 45) pool = [...serieC];
-  else if (rep < 60) pool = [...serieC, ...serieB];
-  else if (rep < 75) {
-    const bottomA = [...serieA].sort((a, b) => a.strength - b.strength).slice(0, Math.floor(serieA.length / 2));
-    pool = [...serieB, ...bottomA];
-  } else pool = [...serieA, ...serieB, ...serieC];
+  const currentTier = getCurrentObjectiveTier(rep);
+  const allTeamsPool = [...serieA, ...serieB, ...serieC];
+  // Nota: la reputazione del DS umano e la forza dei DS delle squadre CPU
+  // sono deliberatamente SVINCOLATE — nessun confronto tra le due, su
+  // richiesta esplicita dell'utente ("non ci sono cose che valorizzano l'una
+  // o l'altra"). L'unico criterio di idoneità resta l'obiettivo/tier della
+  // squadra; l'assegnazione dei DS CPU alle squadre resta quella esistente
+  // ("per riempimento"), invariata.
+  const eligible = t => t !== playerTeam && !(t.ds && t.ds.isHuman)
+    // Non riproporre la squadra appena lasciata (vedi leaveTeamAsDS).
+    && t.name !== dsCareer.lastTeamName;
 
-  const eligible = t => t !== playerTeam && !(t.ds && t.ds.isHuman);
-  // Nota: createDirector garantisce sempre forza >= 30, quindi un margine
-  // troppo stretto (es. "< rep - 8") escluderebbe SEMPRE tutti i DS AI a
-  // bassa reputazione — bug che lasciava una sola offerta di fallback a
-  // inizio carriera. Margine più ampio (+10) per un pool realistico.
-  let candidates = pool.filter(t => eligible(t) && (!t.ds || t.ds.strength < rep + 10));
-  shuffleArray(candidates);
-  let offers = candidates.slice(0, MIN_DS_JOB_OFFERS);
+  const byTier = new Map(); // tier (1-12) → squadre idonee con quell'obiettivo
+  allTeamsPool.filter(eligible).forEach(t => {
+    const tier = estimateObjectiveGlobalTier(t);
+    if (!byTier.has(tier)) byTier.set(tier, []);
+    byTier.get(tier).push(t);
+  });
 
-  // Garanzia: almeno MIN_DS_JOB_OFFERS offerte (o tutte quelle disponibili
-  // nel pool, se meno) — se il filtro di forza non ne dà abbastanza, ripesca
-  // dal pool le squadre col DS più debole per completare.
-  if (offers.length < MIN_DS_JOB_OFFERS) {
-    const already = new Set(offers.map(t => t.name));
-    const backfill = pool
-      .filter(t => eligible(t) && !already.has(t.name))
-      .sort((a, b) => (a.ds?.strength || 0) - (b.ds?.strength || 0));
-    for (const t of backfill) {
+  const offers = [];
+  const alreadyPicked = new Set();
+  const pullFromTier = (tier) => {
+    const list = [...(byTier.get(tier) || [])];
+    shuffleArray(list);
+    for (const t of list) {
+      if (offers.length >= MIN_DS_JOB_OFFERS) break;
+      if (alreadyPicked.has(t.name)) continue;
+      offers.push(t);
+      alreadyPicked.add(t.name);
+    }
+  };
+
+  pullFromTier(currentTier);
+  // Alcuni tier hanno pochissime squadre idonee (es. "Titolo/top3" ne ha solo
+  // 3 per lega contro le 5 offerte richieste, oppure il filtro sulla forza
+  // del DS avversario — sopra — ne esclude molte in una partita già avviata,
+  // o la squadra appena lasciata era proprio nel tier corrente): se il tier
+  // corrente non basta, si ripesca dal tier adiacente più vicino (prima
+  // quello sotto, obiettivo meno ambizioso, poi quello sopra), allargando il
+  // raggio finché non si arriva a 5. Verso l'ALTO non si supera MAI la lega
+  // del tier corrente (i tier 1-4 sono la Serie C, 5-8 la B, 9-12 la A: da un
+  // tier di Serie B non si deve mai scavalcare fino alla Serie A); verso il
+  // BASSO invece si può scendere anche nella lega inferiore, se necessario
+  // per arrivare comunque a 5 offerte (es. rep 63 → tier "Salvezza B": se
+  // mancano candidati lì, si scende a "Promozione C", non si sale mai a A).
+  const leagueTierHigh = currentTier <= 4 ? 4 : currentTier <= 8 ? 8 : 12;
+  for (let dist = 1; offers.length < MIN_DS_JOB_OFFERS && dist <= 11; dist++) {
+    if (currentTier - dist >= 1) pullFromTier(currentTier - dist);
+    if (offers.length < MIN_DS_JOB_OFFERS && currentTier + dist <= leagueTierHigh) pullFromTier(currentTier + dist);
+  }
+  // Rete di sicurezza estrema (in pratica non dovrebbe mai scattare, dato che
+  // ogni lega ha 20 squadre e le uniche esclusioni sono playerTeam/DS umano/
+  // squadra appena lasciata): se il ripesco regolare non ha comunque trovato
+  // NESSUNA squadra, si ignora eccezionalmente il limite di lega pur di
+  // garantire almeno un'offerta, invece di lasciare il DS bloccato per sempre.
+  if (offers.length === 0) {
+    const fallback = allTeamsPool.filter(eligible)
+      .sort((a, b) => Math.abs(estimateObjectiveGlobalTier(a) - currentTier) - Math.abs(estimateObjectiveGlobalTier(b) - currentTier));
+    for (const t of fallback) {
       if (offers.length >= MIN_DS_JOB_OFFERS) break;
       offers.push(t);
     }
@@ -3123,9 +3219,9 @@ function computeReputationDelta(d) {
 // PARTENZA, non di quella d'arrivo). Se la reputazione è già oltre il tetto,
 // una stagione positiva non la fa crescere ulteriormente — un calo resta
 // sempre possibile, il tetto vincola solo la crescita.
-const DS_REP_LEAGUE_CAP = { C: 65, B: 80, A: 95 };
+const DS_REP_LEAGUE_CAP = { C: 65, B: 80, A: 100 };
 function applyReputationCap(oldRep, delta, league) {
-  const cap = DS_REP_LEAGUE_CAP[league] ?? 95;
+  const cap = DS_REP_LEAGUE_CAP[league] ?? 100;
   if (delta > 0) return oldRep >= cap ? oldRep : Math.min(cap, oldRep + delta);
   return oldRep + delta;
 }
@@ -3135,7 +3231,7 @@ function showSeasonEvaluationModal(d, onDone) {
   seasonJobOffersCache = null; // nuova stagione: le squadre disponibili si ripescano da zero, una sola volta
   const oldRep = dsCareer.reputation;
   const delta = computeReputationDelta(d);
-  dsCareer.reputation = Math.max(5, Math.min(95, applyReputationCap(oldRep, delta, d.league)));
+  dsCareer.reputation = Math.max(5, Math.min(100, applyReputationCap(oldRep, delta, d.league)));
   dsCareer.age++;
   if (playerTeam.ds && playerTeam.ds.isHuman) {
     playerTeam.ds.strength = dsCareer.reputation;
@@ -3413,7 +3509,13 @@ function showTeamSelectionScreen() {
       btn.addEventListener('click', () => {
         const team = [...serieA, ...serieB, ...serieC].find(t => t.name === btn.dataset.teamName);
         if (!team) return;
-        dsCareer.reputation = Math.max(25, Math.min(75, Math.round(team.strength) - 8));
+        // La reputazione iniziale è la MINIMA richiesta per l'obiettivo della
+        // squadra scelta (stesso schema a scaglioni delle offerte di lavoro:
+        // JOB_OFFER_REP_BASE + (tier-1) × JOB_OFFER_REP_STEP) — scegliere una
+        // squadra da "Titolo/top3" parte quindi da reputazione 95, non da una
+        // stima slegata basata sulla forza grezza della squadra.
+        const tier = estimateObjectiveGlobalTier(team);
+        dsCareer.reputation = JOB_OFFER_REP_BASE + (tier - 1) * JOB_OFFER_REP_STEP;
         hirePlayerAsDS(team, 2 + Math.floor(Math.random() * 2));
         overlay.remove();
         startCareerMarketSession();
@@ -3490,15 +3592,26 @@ function updateSeasonBtn() {
   }
 }
 
-const setObjectives = (teams) => {
+// Serie A: fasce percentuali (top3 / 40% / 75%, invariato). Serie B e C (20
+// squadre ciascuna): fasce fisse da 5 posizioni (1-5 Promozione, 6-10 Metà
+// alta, 11-15 Metà classifica, 16-20 Salvezza), su richiesta esplicita
+// dell'utente — a differenza della A, dove restano legate alla percentuale.
+const setObjectives = (teams, league) => {
   const sorted = [...teams].sort((a, b) => b.strength - a.strength);
   sorted.forEach((team, idx) => {
     const n = teams.length;
     const rank = idx + 1;
-    if (rank <= 3) team.objective = { description: 'Titolo/top 3', maxRank: 3 };
-    else if (rank <= Math.floor(n * 0.4)) team.objective = { description: 'Metà alta', maxRank: Math.floor(n * 0.4) };
-    else if (rank <= Math.floor(n * 0.75)) team.objective = { description: 'Metà classifica', maxRank: Math.floor(n * 0.75) };
-    else team.objective = { description: 'Salvezza', maxRank: n - 4 };
+    if (league === 'A') {
+      if (rank <= 3) team.objective = { description: 'Titolo/top 3', maxRank: 3 };
+      else if (rank <= Math.floor(n * 0.4)) team.objective = { description: 'Metà alta', maxRank: Math.floor(n * 0.4) };
+      else if (rank <= Math.floor(n * 0.75)) team.objective = { description: 'Metà classifica', maxRank: Math.floor(n * 0.75) };
+      else team.objective = { description: 'Salvezza', maxRank: n - 4 };
+    } else {
+      if (rank <= 5) team.objective = { description: 'Promozione', maxRank: 5 };
+      else if (rank <= 10) team.objective = { description: 'Metà alta', maxRank: 10 };
+      else if (rank <= 15) team.objective = { description: 'Metà classifica', maxRank: 15 };
+      else team.objective = { description: 'Salvezza', maxRank: n - 4 };
+    }
   });
 };
 
@@ -3620,6 +3733,24 @@ function durationSelectHtml(dataAttr, id, selectedYears) {
   const sel = (selectedYears >= 1 && selectedYears <= 5) ? selectedYears : 3;
   const opts = [1, 2, 3, 4, 5].map(y => `<option value="${y}"${y === sel ? ' selected' : ''}>${y}a</option>`).join('');
   return `<select ${dataAttr}="${id}" style="padding:3px 6px;border-radius:4px;border:1px solid var(--border-card);font-size:.78rem">${opts}</select>`;
+}
+
+// Tetto massimo di anni totali di contratto raggiungibile con un rinnovo
+// anticipato dalla tab Rosa (si somma alla durata residua, non la sostituisce).
+const ROSA_RENEW_MAX_TOTAL_YEARS = 6;
+// Selettore per il rinnovo anticipato dalla tab Rosa: qui gli anni scelti si
+// SOMMANO alla durata residua del contratto (non la sostituiscono, altrimenti
+// un contratto in scadenza tra 4 anni rinnovato di "1" finirebbe accorciato a
+// 1 anno, che non ha senso) — le opzioni mostrate sono quindi limitate a non
+// far mai superare ROSA_RENEW_MAX_TOTAL_YEARS anni totali.
+function rosaRenewDurationSelectHtml(id, currentDuration) {
+  const base = Math.max(0, currentDuration || 0);
+  const maxAdd = ROSA_RENEW_MAX_TOTAL_YEARS - base;
+  if (maxAdd < 1) return '<span style="font-size:.78rem;color:#666">Già al massimo (6 anni)</span>';
+  const sel = Math.min(3, maxAdd);
+  const opts = Array.from({ length: maxAdd }, (_, i) => i + 1)
+    .map(y => `<option value="${y}"${y === sel ? ' selected' : ''}>+${y}a</option>`).join('');
+  return `<select data-rosa-renew-dur="${id}" style="padding:3px 6px;border-radius:4px;border:1px solid var(--border-card);font-size:.78rem">${opts}</select>`;
 }
 
 function buildFilterBar(f, showScoutSeg) {
@@ -3822,8 +3953,8 @@ function showWinterMarketModal(onConfirm) {
         const previewSalary = getDisplaySalary(p.strength);
         panelRow = `<tr class="rosa-panel-row"><td colspan="10">
           <strong>Rinnova ${p.firstName} ${p.lastName}</strong> — nuovo stipendio in base alla forza attuale: <strong>${formatMoneyK(annualSalary(previewSalary))}€/anno</strong>
-          ${durationSelectHtml('data-rosa-renew-dur', p.id, p.contract?.duration)}
-          <button class="mm-btn mm-green" data-action="rosa-confirm-renew" data-pid="${p.id}">Conferma rinnovo</button>
+          ${rosaRenewDurationSelectHtml(p.id, p.contract?.duration)}
+          <button class="mm-btn mm-green" data-action="rosa-confirm-renew" data-pid="${p.id}" ${(ROSA_RENEW_MAX_TOTAL_YEARS - (p.contract?.duration || 0)) < 1 ? 'disabled' : ''}>Conferma rinnovo</button>
         </td></tr>`;
       }
 
@@ -4149,9 +4280,9 @@ document.getElementById('simulaStagione').addEventListener('click', function () 
     document.getElementById('serieB').innerHTML = '';
     document.getElementById('serieC').innerHTML = '';
 
-    setObjectives(serieA);
-    setObjectives(serieB);
-    setObjectives(serieC);
+    setObjectives(serieA, 'A');
+    setObjectives(serieB, 'B');
+    setObjectives(serieC, 'C');
 
     displayPreSeasonStandings('serieA', serieA);
     displayPreSeasonStandings('serieB', serieB);
@@ -4563,7 +4694,7 @@ function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newS
     if (playerTeam && team === playerTeam) return; // il giocatore decide dalla tab Panchina
     const coach = team.coach;
     if (Math.random() < 0.75) {
-      coach.contract = createCoachContract(coach, 2 + Math.floor(Math.random() * 3));
+      coach.contract = createCoachContract(coach, 1 + Math.floor(Math.random() * 4)); // 1-4 anni: il rinnovo può essere anche di un solo anno
       transferLog.push(`📄 <strong>${team.name}</strong> rinnova il contratto di <em>${coach.firstName} ${coach.lastName}</em> (${coach.contract.duration} anni)`);
     } else {
       transferLog.push(`📄 <em>${coach.firstName} ${coach.lastName}</em> lascia <strong>${team.name}</strong> a fine contratto`);
@@ -5407,15 +5538,19 @@ function executeEarlyRelease(player) {
 }
 
 // Rinnovo "a piacimento" (non solo per contratti in scadenza): aggiorna lo
-// stipendio al valore di mercato attuale in base alla forza e imposta la
-// durata scelta dal giocatore.
+// stipendio al valore di mercato attuale in base alla forza e SOMMA gli anni
+// scelti alla durata residua del contratto (non la sostituisce — un contratto
+// in scadenza tra 4 anni rinnovato di "1" deve arrivare a 5, non tornare a 1),
+// col tetto ROSA_RENEW_MAX_TOTAL_YEARS già garantito a monte dalle opzioni
+// mostrate in rosaRenewDurationSelectHtml.
 function executeAnytimeRenew(player, years) {
   const newSalary = getDisplaySalary(player.strength);
   if (!wageCapAllows(playerTeam, newSalary, player.contract?.salary || 0)) return false;
+  const baseDuration = player.contract?.duration || 0;
   if (!player.contract) player.contract = createContract(player.strength, player.age);
   player.contract.salary = newSalary;
-  player.contract.duration = years;
-  transferLog.push(`📋 <em>${player.firstName} ${player.lastName}</em> rinnova con <strong>${playerTeam.name}</strong> — ${years} anni, ${formatMoneyK(annualSalary(newSalary))}€/anno`);
+  player.contract.duration = Math.min(ROSA_RENEW_MAX_TOTAL_YEARS, baseDuration + years);
+  transferLog.push(`📋 <em>${player.firstName} ${player.lastName}</em> rinnova con <strong>${playerTeam.name}</strong> — ora in scadenza tra ${player.contract.duration} anni (+${years}), ${formatMoneyK(annualSalary(newSalary))}€/anno`);
   return true;
 }
 
@@ -5544,6 +5679,16 @@ function showManagerMarketModal(onConfirm) {
   const renewalDecisions = new Map(); // player.id → 'renewed' | 'released'
   const offerDecisions   = new Map(); // player.id → 'accepted' | 'refused'
   const boughtIds        = new Set(); // player.id già acquistati
+  // Se il giocatore lascia la rosa da un percorso diverso dalla tab Offerte
+  // (Vendi/Presta/Svincola dalla tab Rosa), un'eventuale offerta AI pendente
+  // per lui va invalidata subito: altrimenti resterebbe accettabile per un
+  // giocatore che nel frattempo è già altrove, con conseguente sdoppiamento
+  // (il giocatore finirebbe nella rosa di DUE squadre contemporaneamente).
+  const invalidatePendingOfferFor = (playerId) => {
+    if (pendingAIOffers.some(o => o.player.id === playerId) && !offerDecisions.has(playerId)) {
+      offerDecisions.set(playerId, 'refused');
+    }
+  };
   const filter = { role: '', ageMin: 16, ageMax: 40, strMin: 0, strMax: 100, availability: 'all' };
   let coachCandidates = []; // ricostruito a ogni render della tab Panchina: idx → coach da freeCoaches
   let coachBuyCandidates = []; // ricostruito a ogni render della tab Panchina: idx → { coach, fromTeam } acquistabili a pagamento
@@ -5611,7 +5756,15 @@ function showManagerMarketModal(onConfirm) {
     return pendingAIOffers.map(({ player, buyerTeam, offerPrice }) => {
       const d = offerDecisions.get(player.id);
       if (d === 'accepted') return `<div class="mm-row mm-done">✅ <strong>${player.firstName} ${player.lastName}</strong> venduto a ${buyerTeam.name} — ${offerPrice.toFixed(1)}M€</div>`;
-      if (d === 'refused')  return `<div class="mm-row mm-done">❌ Offerta rifiutata — <strong>${player.firstName} ${player.lastName}</strong> rimane</div>`;
+      if (d === 'refused') {
+        // Il rifiuto può arrivare sia da un click esplicito su "Rifiuta" (il
+        // giocatore resta in rosa) sia perché nel frattempo è stato ceduto/
+        // prestato/svincolato dalla tab Rosa (l'offerta va invalidata di
+        // conseguenza — vedi invalidatePendingOfferFor) — il messaggio
+        // riflette quale dei due casi è successo davvero.
+        const stillHere = playerTeam.roster.includes(player);
+        return `<div class="mm-row mm-done">❌ Offerta rifiutata — <strong>${player.firstName} ${player.lastName}</strong> ${stillHere ? 'rimane' : 'nel frattempo ha lasciato la rosa'}</div>`;
+      }
       return `<div class="mm-row">
         <div class="mm-pinfo">${formatNationality(player)}<span class="mm-name">${player.firstName} ${player.lastName}</span><span class="mm-badge role-${player.role}">${player.role}</span><span style="font-size:.78rem;color:#666">${formatSubRoles(player)}</span><span>${player.age}a</span><span>⚡${player.strength}</span><span class="mm-buyer-tag">🏟️ ${buyerTeam.name}</span></div>
         <div class="mm-acts">
@@ -5733,8 +5886,8 @@ function showManagerMarketModal(onConfirm) {
         const previewSalary = getDisplaySalary(p.strength);
         panelRow = `<tr class="rosa-panel-row"><td colspan="10">
           <strong>Rinnova ${p.firstName} ${p.lastName}</strong> — nuovo stipendio in base alla forza attuale: <strong>${formatMoneyK(annualSalary(previewSalary))}€/anno</strong>
-          ${durationSelectHtml('data-rosa-renew-dur', p.id, p.contract?.duration)}
-          <button class="mm-btn mm-green" data-action="rosa-confirm-renew" data-pid="${p.id}">Conferma rinnovo</button>
+          ${rosaRenewDurationSelectHtml(p.id, p.contract?.duration)}
+          <button class="mm-btn mm-green" data-action="rosa-confirm-renew" data-pid="${p.id}" ${(ROSA_RENEW_MAX_TOTAL_YEARS - (p.contract?.duration || 0)) < 1 ? 'disabled' : ''}>Conferma rinnovo</button>
         </td></tr>`;
       }
 
@@ -5808,75 +5961,97 @@ function showManagerMarketModal(onConfirm) {
     const showFree = coachAvail !== 'market';
     const showMarket = coachAvail !== 'free';
 
-    // ── Mercato allenatori liberi (sempre visibile, anche con un allenatore già in carica) ──
-    if (showFree) {
-      html += `<div class="mm-section-title">🆓 Svincolati</div>`;
-      html += `<div class="mm-row">
-        <div class="mm-pinfo"><span class="mm-name">🌱 Promuovi un emergente</span><span style="font-size:.8rem;color:#666">Un allenatore sconosciuto, gratis${swapNote}</span></div>
-        <div class="mm-acts">${durationSelectHtml('data-dur-emerging', 'x')}<button class="mm-btn mm-blue" data-action="hire-emerging" ${playerTeam.budget < outgoingSeverance ? 'disabled' : ''}>Ingaggia</button></div></div>`;
+    // Righe delle due liste: estratte in funzioni riusabili così la vista
+    // "Tutti" può interlacciarle in un unico elenco ordinato per forza,
+    // invece di mostrare sempre prima tutti gli svincolati e poi il mercato
+    // a prescindere dalla forza (comportamento precedente, segnalato
+    // dall'utente come poco intuitivo).
+    const canAffordSwap = playerTeam.budget >= outgoingSeverance;
+    const renderFreeCoachRow = (c, i) => {
+      const fit = getFormationFitLabel(playerTeam, c.formation);
+      return `<div class="mm-row">
+        <div class="mm-pinfo">
+          <span class="mm-name">${c.firstName} ${c.lastName}</span>
+          <span>${c.age}a</span>
+          <span>⚡${c.strength}</span>
+          <span class="mm-badge" title="${formatFormationRequirements(c.formation)}">${c.formation}</span>
+          <span style="font-size:.8rem;color:${fit.color};font-weight:600">${fit.text}</span>
+          <span class="mm-salary-tag">💼 ${formatMoneyK(annualSalary(getDisplaySalary(c.strength)))}€/anno</span>
+          <span style="font-size:.75rem;color:#15803d">🆓 svincolato</span>
+          ${swapNote}
+        </div>
+        <div class="mm-acts">
+          <strong class="mm-price">Gratis</strong>
+          ${durationSelectHtml('data-dur-hire', i)}
+          <button class="mm-btn mm-blue" data-action="hire-coach" data-cand-idx="${i}" ${canAffordSwap ? '' : 'disabled'}>Ingaggia</button>
+        </div></div>`;
+    };
+    const renderMarketCoachRow = ({ coach: c, fromTeam }, i) => {
+      const fit = getFormationFitLabel(playerTeam, c.formation);
+      const price = getCoachTransferValue(c);
+      const totalCost = price + outgoingSeverance;
+      const canAfford = playerTeam.budget >= totalCost;
+      return `<div class="mm-row">
+        <div class="mm-pinfo">
+          <span class="mm-name">${c.firstName} ${c.lastName}</span>
+          <span>${c.age}a</span>
+          <span>⚡${c.strength}</span>
+          <span class="mm-badge" title="${formatFormationRequirements(c.formation)}">${c.formation}</span>
+          <span style="font-size:.8rem;color:${fit.color};font-weight:600">${fit.text}</span>
+          <span class="mm-salary-tag">💼 ${formatMoneyK(annualSalary(getDisplaySalary(c.strength)))}€/anno</span>
+          <span class="mm-from-tag">da ${fromTeam.name}</span>
+          ${swapNote}
+        </div>
+        <div class="mm-acts">
+          <strong class="mm-price">${price.toFixed(1)}M€</strong>
+          ${durationSelectHtml('data-dur-buy-coach', i)}
+          <button class="mm-btn mm-blue" data-action="buy-coach" data-cand-idx="${i}" ${canAfford ? '' : 'disabled'}>${canAfford ? 'Acquista' : 'Fondi insuff.'}</button>
+        </div></div>`;
+    };
 
-      const coachCap = leagueStrCap(playerTeam.leagueLevel);
-      coachCandidates = [...freeCoaches].filter(c => c.strength <= coachCap).sort((a, b) => b.strength - a.strength).slice(0, 25);
-      if (!coachCandidates.length) {
-        html += '<p class="mm-empty">Nessun altro allenatore libero sul mercato al momento.</p>';
-      } else {
-        html += coachCandidates.map((c, i) => {
-          const fit = getFormationFitLabel(playerTeam, c.formation);
-          const canAffordSwap = playerTeam.budget >= outgoingSeverance;
-          return `<div class="mm-row">
-            <div class="mm-pinfo">
-              <span class="mm-name">${c.firstName} ${c.lastName}</span>
-              <span>${c.age}a</span>
-              <span>⚡${c.strength}</span>
-              <span class="mm-badge" title="${formatFormationRequirements(c.formation)}">${c.formation}</span>
-              <span style="font-size:.8rem;color:${fit.color};font-weight:600">${fit.text}</span>
-              <span class="mm-salary-tag">💼 ${formatMoneyK(annualSalary(getDisplaySalary(c.strength)))}€/anno</span>
-              ${swapNote}
-            </div>
-            <div class="mm-acts">
-              <strong class="mm-price">Gratis</strong>
-              ${durationSelectHtml('data-dur-hire', i)}
-              <button class="mm-btn mm-blue" data-action="hire-coach" data-cand-idx="${i}" ${canAffordSwap ? '' : 'disabled'}>Ingaggia</button>
-            </div></div>`;
-        }).join('');
-      }
-    }
-
-    // ── Acquista dall'estero/altre squadre: allenatori ancora sotto contratto ──
-    if (showMarket) {
-    html += `<div class="mm-section-title">🛒 Sul mercato <span style="font-weight:400;color:#666;font-size:.78rem">(sotto contratto altrove)</span></div>`;
+    const coachCap = leagueStrCap(playerTeam.leagueLevel);
+    coachCandidates = [...freeCoaches].filter(c => c.strength <= coachCap).sort((a, b) => b.strength - a.strength).slice(0, 25);
     const coachBuyCap = leagueStrCap(playerTeam.leagueLevel);
     coachBuyCandidates = [...serieA, ...serieB, ...serieC]
       .filter(t => t !== playerTeam && t.coach && t.coach.strength <= coachBuyCap)
       .map(t => ({ coach: t.coach, fromTeam: t }))
       .sort((a, b) => b.coach.strength - a.coach.strength)
       .slice(0, 25);
-    if (!coachBuyCandidates.length) {
-      html += '<p class="mm-empty">Nessun allenatore acquistabile al momento.</p>';
-    } else {
-      html += coachBuyCandidates.map(({ coach: c, fromTeam }, i) => {
-        const fit = getFormationFitLabel(playerTeam, c.formation);
-        const price = getCoachTransferValue(c);
-        const totalCost = price + outgoingSeverance;
-        const canAfford = playerTeam.budget >= totalCost;
-        return `<div class="mm-row">
-          <div class="mm-pinfo">
-            <span class="mm-name">${c.firstName} ${c.lastName}</span>
-            <span>${c.age}a</span>
-            <span>⚡${c.strength}</span>
-            <span class="mm-badge" title="${formatFormationRequirements(c.formation)}">${c.formation}</span>
-            <span style="font-size:.8rem;color:${fit.color};font-weight:600">${fit.text}</span>
-            <span class="mm-salary-tag">💼 ${formatMoneyK(annualSalary(getDisplaySalary(c.strength)))}€/anno</span>
-            <span class="mm-from-tag">da ${fromTeam.name}</span>
-            ${swapNote}
-          </div>
-          <div class="mm-acts">
-            <strong class="mm-price">${price.toFixed(1)}M€</strong>
-            ${durationSelectHtml('data-dur-buy-coach', i)}
-            <button class="mm-btn mm-blue" data-action="buy-coach" data-cand-idx="${i}" ${canAfford ? '' : 'disabled'}>${canAfford ? 'Acquista' : 'Fondi insuff.'}</button>
-          </div></div>`;
-      }).join('');
-    }
+
+    if (coachAvail === 'all') {
+      // "🌱 Promuovi un emergente" resta un'offerta speciale sempre in cima,
+      // a parte: la sua forza è sconosciuta finché non lo si ingaggia, quindi
+      // non ha senso inserirlo nell'ordinamento per forza degli altri.
+      html += `<div class="mm-row">
+        <div class="mm-pinfo"><span class="mm-name">🌱 Promuovi un emergente</span><span style="font-size:.8rem;color:#666">Un allenatore sconosciuto, gratis${swapNote}</span></div>
+        <div class="mm-acts">${durationSelectHtml('data-dur-emerging', 'x')}<button class="mm-btn mm-blue" data-action="hire-emerging" ${playerTeam.budget < outgoingSeverance ? 'disabled' : ''}>Ingaggia</button></div></div>`;
+
+      const merged = [
+        ...coachCandidates.map((c, i) => ({ strength: c.strength, row: renderFreeCoachRow(c, i) })),
+        ...coachBuyCandidates.map((cand, i) => ({ strength: cand.coach.strength, row: renderMarketCoachRow(cand, i) })),
+      ].sort((a, b) => b.strength - a.strength);
+      if (!merged.length) {
+        html += '<p class="mm-empty">Nessun allenatore disponibile al momento.</p>';
+      } else {
+        html += merged.map(m => m.row).join('');
+      }
+    } else if (showFree) {
+      html += `<div class="mm-section-title">🆓 Svincolati</div>`;
+      html += `<div class="mm-row">
+        <div class="mm-pinfo"><span class="mm-name">🌱 Promuovi un emergente</span><span style="font-size:.8rem;color:#666">Un allenatore sconosciuto, gratis${swapNote}</span></div>
+        <div class="mm-acts">${durationSelectHtml('data-dur-emerging', 'x')}<button class="mm-btn mm-blue" data-action="hire-emerging" ${playerTeam.budget < outgoingSeverance ? 'disabled' : ''}>Ingaggia</button></div></div>`;
+      if (!coachCandidates.length) {
+        html += '<p class="mm-empty">Nessun altro allenatore libero sul mercato al momento.</p>';
+      } else {
+        html += coachCandidates.map(renderFreeCoachRow).join('');
+      }
+    } else if (showMarket) {
+      html += `<div class="mm-section-title">🛒 Sul mercato <span style="font-weight:400;color:#666;font-size:.78rem">(sotto contratto altrove)</span></div>`;
+      if (!coachBuyCandidates.length) {
+        html += '<p class="mm-empty">Nessun allenatore acquistabile al momento.</p>';
+      } else {
+        html += coachBuyCandidates.map(renderMarketCoachRow).join('');
+      }
     }
     return html;
   };
@@ -6121,7 +6296,12 @@ function showManagerMarketModal(onConfirm) {
           }
         } else if (action === 'accept-offer') {
           const offer = pendingAIOffers.find(o => o.player.id === id);
-          if (offer && !offerDecisions.has(id)) {
+          // Guardia difensiva: se il giocatore ha già lasciato la rosa per un
+          // altro motivo (Vendi/Presta/Svincola dalla tab Rosa), l'offerta
+          // dovrebbe già risultare invalidata da invalidatePendingOfferFor —
+          // questo controllo evita comunque lo sdoppiamento in caso di
+          // percorsi futuri non coperti da quell'invalidazione esplicita.
+          if (offer && !offerDecisions.has(id) && playerTeam.roster.includes(offer.player)) {
             const { player: p, buyerTeam, offerPrice } = offer;
             playerTeam.roster = playerTeam.roster.filter(x => x !== p);
             buyerTeam.roster.push(p);
@@ -6221,6 +6401,27 @@ function showManagerMarketModal(onConfirm) {
               coach.contract = createCoachContract(coach, years);
               playerTeam.coach = coach;
               transferLog.push(`🛒 <strong>${playerTeam.name}</strong> acquista l'allenatore <em>${coach.firstName} ${coach.lastName}</em> da <strong>${fromTeam.name}</strong> per <strong>${price.toFixed(1)}M€</strong> (Forza: ${coach.strength}, ${coach.formation}) — contratto ${years} anni`);
+
+              // Domino di mercato: la squadra appena rimasta senza allenatore
+              // ne ingaggia SUBITO uno nuovo (stessa logica di fine stagione
+              // in updateTeamStrengths), invece di restare scoperta fino alla
+              // prossima stagione. Esclude "outgoing" (l'allenatore appena
+              // liberato dal giocatore con displaceCurrentCoach, se presente):
+              // un allenatore che ha appena cambiato squadra non può essere
+              // ripreso nello stesso istante.
+              const replacementIdx = freeCoaches
+                .map((c, i) => ({ c, i }))
+                .filter(({ c }) => c !== outgoing)
+                .sort((a, b) => b.c.strength - a.c.strength)[0]?.i;
+              if (replacementIdx !== undefined) {
+                const replacement = freeCoaches.splice(replacementIdx, 1)[0];
+                replacement.contract = createCoachContract(replacement, 2 + Math.floor(Math.random() * 3));
+                fromTeam.coach = replacement;
+                transferLog.push(`✅ <strong>${fromTeam.name}</strong> ingaggia subito <em>${replacement.firstName} ${replacement.lastName}</em> (Forza: ${replacement.strength})`);
+              } else {
+                fromTeam.coach = createCoach(fromTeam);
+                transferLog.push(`✅ <strong>${fromTeam.name}</strong> promuove subito <em>${fromTeam.coach.firstName} ${fromTeam.coach.lastName}</em> (Forza: ${fromTeam.coach.strength})`);
+              }
             }
           }
         } else if (action === 'renew-coach') {
@@ -6257,7 +6458,7 @@ function showManagerMarketModal(onConfirm) {
               offers,
               renderSellOfferRow,
               (idx) => {
-                if (idx >= 0) { executeSellOffer(p, offers[idx]); rosaSellOffers.delete(id); }
+                if (idx >= 0) { executeSellOffer(p, offers[idx]); rosaSellOffers.delete(id); invalidatePendingOfferFor(id); }
                 render();
               }
             );
@@ -6272,7 +6473,7 @@ function showManagerMarketModal(onConfirm) {
               offers,
               (o, i) => `<div class="mm-row"><div class="mm-pinfo"><span class="mm-name">${o.team.name}</span><span style="font-size:.8rem;color:#666">(Serie ${o.team.leagueLevel})</span></div><div class="mm-acts"><button class="mm-btn mm-blue" data-offer-idx="${i}">Presta</button></div></div>`,
               (idx) => {
-                if (idx >= 0 && canLoanOutPlayer(playerTeam, p)) { executeLoanOutTo(p, offers[idx].team); rosaLoanOffers.delete(id); }
+                if (idx >= 0 && canLoanOutPlayer(playerTeam, p)) { executeLoanOutTo(p, offers[idx].team); rosaLoanOffers.delete(id); invalidatePendingOfferFor(id); }
                 render();
               }
             );
@@ -6280,10 +6481,20 @@ function showManagerMarketModal(onConfirm) {
         } else if (action === 'rosa-confirm-renew') {
           const p = playerTeam.roster.find(x => x.id === id);
           const years = +(overlay.querySelector(`select[data-rosa-renew-dur="${id}"]`)?.value) || 3;
-          if (p && executeAnytimeRenew(p, years)) rosaRowPanel.delete(id);
+          if (p && executeAnytimeRenew(p, years)) {
+            rosaRowPanel.delete(id);
+            // Se il giocatore era anche tra i contratti in scadenza (tab
+            // Rinnovi), il rinnovo fatto da qui deve farlo sparire anche da
+            // lì — altrimenti resterebbe mostrato come "ancora da decidere".
+            if (pendingRenewals.some(r => r.id === id)) renewalDecisions.set(id, 'renewed');
+          }
         } else if (action === 'rosa-release') {
           const p = playerTeam.roster.find(x => x.id === id);
-          if (p && executeEarlyRelease(p)) rosaRowPanel.delete(id);
+          if (p && executeEarlyRelease(p)) {
+            rosaRowPanel.delete(id);
+            if (pendingRenewals.some(r => r.id === id)) renewalDecisions.set(id, 'released');
+            invalidatePendingOfferFor(id);
+          }
         }
         render();
       });
