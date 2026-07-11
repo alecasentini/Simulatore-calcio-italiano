@@ -1007,13 +1007,36 @@ function pickAssister(lineup, scorer) {
   return pool[pool.length - 1];
 }
 
-// Decrementa i contatori di infortuni e squalifiche per tutte le squadre.
-// Va chiamato alla FINE di ogni giornata (dopo aver simulato le partite).
-function processMatchdayRecovery() {
+// Cattura, PRIMA di simulare una giornata, chi è già infortunato/squalificato
+// — serve a processMatchdayRecovery per non decrementare (e quindi annullare
+// subito) un infortunio o una squalifica appena rimediati IN quella stessa
+// giornata (vedi lì per il bug che questo risolve).
+function snapshotInjurySuspensionState() {
+  const map = new Map();
   [...serieA, ...serieB, ...serieC].forEach(team => {
     team.roster.forEach(p => {
-      if ((p.injuryMatchesLeft || 0) > 0) p.injuryMatchesLeft--;
-      if ((p.suspendedMatchesLeft || 0) > 0) p.suspendedMatchesLeft--;
+      map.set(p, { injury: p.injuryMatchesLeft || 0, susp: p.suspendedMatchesLeft || 0 });
+    });
+  });
+  return map;
+}
+
+// Decrementa i contatori di infortuni e squalifiche per tutte le squadre.
+// Va chiamato alla FINE di ogni giornata (dopo aver simulato le partite),
+// passando lo snapshot preso PRIMA di simularla (snapshotInjurySuspensionState):
+// si decrementa solo chi era già infortunato/squalificato ALL'INIZIO della
+// giornata appena giocata. Senza questo distinguo, un cartellino rosso o un
+// infortunio rimediato proprio in questa giornata (suspendedMatchesLeft
+// impostato a 1 durante generateMatchResult) verrebbe subito riportato a 0
+// nello stesso turno, e il giocatore non salterebbe mai davvero la partita
+// successiva nonostante compaia squalificato nel tabellino.
+function processMatchdayRecovery(preState) {
+  [...serieA, ...serieB, ...serieC].forEach(team => {
+    team.roster.forEach(p => {
+      const pre = preState.get(p);
+      if (!pre) return;
+      if (pre.injury > 0 && (p.injuryMatchesLeft || 0) > 0) p.injuryMatchesLeft--;
+      if (pre.susp > 0 && (p.suspendedMatchesLeft || 0) > 0) p.suspendedMatchesLeft--;
     });
   });
 }
@@ -1257,6 +1280,17 @@ function getPresidentPersonalityLabel(president) {
   return `${genLabel} e ${patLabel}`;
 }
 
+// Quanto la pazienza del presidente modula la probabilità di esonero del DS
+// quando l'obiettivo di stagione è mancato di troppo: ±0.20 rispetto alla
+// base (0.45 sia per il DS umano che per quelli CPU) — un presidente molto
+// paziente (100) dimezza il rischio (0.25), uno molto impulsivo (0) lo alza
+// alla stessa distanza (0.65); un presidente "ragionevole" (50) non cambia
+// nulla rispetto al comportamento preesistente.
+function getPresidentFireChance(president, baseChance) {
+  const patience = president?.personality?.patience ?? 50;
+  return baseChance + (50 - patience) / 100 * 0.4;
+}
+
 // Il presidente fissa monte ingaggi e un'iniezione di budget trasferimenti per
 // la nuova stagione, in base alla propria generosità e al livello del club.
 function briefPresidentBudget(team) {
@@ -1289,6 +1323,7 @@ function showPresidentBriefingModal(team, onDone) {
           <div class="pc-contract-row"><span>Obiettivo</span><strong>${estimateObjectiveLabel(team)}</strong></div>
         </div>
         <p style="font-size:.82rem;color:#666;margin-top:10px">Ogni acquisto o rinnovo che superi il monte ingaggi dovrà attendere un taglio altrove in rosa.</p>
+        <p style="font-size:.82rem;color:#666;margin-top:4px">Un presidente ${p.personality.patience >= 65 ? 'paziente come lui tollera qualche stagione storta in più' : p.personality.patience <= 35 ? 'impulsivo come lui non perdona a lungo un obiettivo mancato' : 'ragionevole come lui valuta con equilibrio un obiettivo mancato'} prima di considerare l'esonero.</p>
       </div>
       <div class="mm-footer" style="justify-content:flex-end">
         <button class="mm-btn mm-confirm" id="pb-close">Ho capito, si parte →</button>
@@ -1535,7 +1570,7 @@ function displayTopScorers(containerId, teams) {
   const topAssists = allPlayers
     .filter(({ player: p }) => (p.seasonAssists || 0) > 0)
     .sort((a, b) => (b.player.seasonAssists || 0) - (a.player.seasonAssists || 0))
-    .slice(0, 5);
+    .slice(0, 10);
 
   if (!topScorers.length) return;
 
@@ -3252,7 +3287,7 @@ function showSeasonEvaluationModal(d, onDone) {
   const maxRank = d.objective.maxRank || d.numTeams;
   const overperformed = d.rank <= maxRank - 3;
   const failedBadly = d.rank > maxRank + 4;
-  const fired = failedBadly && Math.random() < 0.45;
+  const fired = failedBadly && Math.random() < getPresidentFireChance(playerTeam.president, 0.45);
   const expired = !fired && dsCareer.contractYears <= 0;
   const renewalOffered = expired && d.rank <= maxRank + 2;
   const renewYears = 2 + Math.floor(Math.random() * 2);
@@ -4389,10 +4424,11 @@ document.getElementById('simulaStagione').addEventListener('click', function () 
       return;
     }
 
+    const preRecoveryState1 = snapshotInjurySuspensionState();
     simulateOneRound(s_roundsA[currentMatchday], standingsA);
     simulateOneRound(s_roundsB[currentMatchday], standingsB);
     simulateOneRound(s_roundsC[currentMatchday], standingsC);
-    processMatchdayRecovery();
+    processMatchdayRecovery(preRecoveryState1);
     applyMatchdayForma([s_roundsA[currentMatchday], s_roundsB[currentMatchday], s_roundsC[currentMatchday]]);
 
     const mdNum = currentMatchday + 1;
@@ -4434,10 +4470,11 @@ document.getElementById('simulaStagione').addEventListener('click', function () 
       return;
     }
 
+    const preRecoveryState2 = snapshotInjurySuspensionState();
     simulateOneRound(s_returnRoundsA[currentMatchday], standingsA);
     simulateOneRound(s_returnRoundsB[currentMatchday], standingsB);
     simulateOneRound(s_returnRoundsC[currentMatchday], standingsC);
-    processMatchdayRecovery();
+    processMatchdayRecovery(preRecoveryState2);
     applyMatchdayForma([s_returnRoundsA[currentMatchday], s_returnRoundsB[currentMatchday], s_returnRoundsC[currentMatchday]]);
 
     const mdNum = currentMatchday + 1 + numRounds;
@@ -4518,10 +4555,11 @@ document.getElementById('simulaTutto')?.addEventListener('click', function () {
 
   if (seasonPhase === 1) {
     while (currentMatchday < numRounds) {
+      const preRecoveryStateFF1 = snapshotInjurySuspensionState();
       simulateOneRound(s_roundsA[currentMatchday], standingsA);
       simulateOneRound(s_roundsB[currentMatchday], standingsB);
       simulateOneRound(s_roundsC[currentMatchday], standingsC);
-      processMatchdayRecovery();
+      processMatchdayRecovery(preRecoveryStateFF1);
       applyMatchdayForma([s_roundsA[currentMatchday], s_roundsB[currentMatchday], s_roundsC[currentMatchday]]);
       currentMatchday++;
     }
@@ -4543,10 +4581,11 @@ document.getElementById('simulaTutto')?.addEventListener('click', function () {
 
   if (seasonPhase === 3) {
     while (currentMatchday < numRounds) {
+      const preRecoveryStateFF2 = snapshotInjurySuspensionState();
       simulateOneRound(s_returnRoundsA[currentMatchday], standingsA);
       simulateOneRound(s_returnRoundsB[currentMatchday], standingsB);
       simulateOneRound(s_returnRoundsC[currentMatchday], standingsC);
-      processMatchdayRecovery();
+      processMatchdayRecovery(preRecoveryStateFF2);
       applyMatchdayForma([s_returnRoundsA[currentMatchday], s_returnRoundsB[currentMatchday], s_returnRoundsC[currentMatchday]]);
       currentMatchday++;
     }
@@ -4683,7 +4722,7 @@ function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newS
         if (!team || !team.ds || team.ds.isHuman || !team.objective) return;
         const actualRank = actualRankIdx + 1;
         const failed = actualRank > team.objective.maxRank + 4;
-        if ((failed && Math.random() < 0.45) || Math.random() < 0.05) {
+        if ((failed && Math.random() < getPresidentFireChance(team.president, 0.45)) || Math.random() < 0.05) {
           transferLog.push(`📊 <strong>${team.name}</strong> ha esonerato il DS <em>${team.ds.firstName} ${team.ds.lastName}</em> — obiettivo: ${team.objective.description}, finito: ${actualRank}°`);
           freeDirectors.push(team.ds);
           team.ds = null;
