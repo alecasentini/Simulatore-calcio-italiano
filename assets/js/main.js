@@ -1168,6 +1168,16 @@ function getDisplaySalary(strength) {
   return Math.max(1, Math.round(getAnnualSalaryBracketValue(strength) / 12));
 }
 
+// Stipendio "richiesto" per un rinnovo: valore di mercato attuale in base
+// alla forza, modulato dalla personalità (i giocatori più avidi chiedono
+// fino al 40% in più) — STESSA formula ovunque nel gioco si proponga un
+// rinnovo (tab Rinnovi e tab Rosa, mercato estivo e invernale), così
+// l'importo mostrato è sempre identico indipendentemente da dove lo si guarda.
+function getRenewalSalary(player) {
+  const greed = player.personality?.greed || 50;
+  return Math.round(getDisplaySalary(player.strength) * (1.0 + greed * 0.004));
+}
+
 // Converte uno stipendio mensile (k€) nella cifra annua mostrata in UI.
 function annualSalary(monthlyK) {
   return monthlyK * 12;
@@ -3801,7 +3811,14 @@ function wireFilterBar(overlay, filter, render) {
 function showWinterMarketModal(onConfirm) {
   const preContractIds = new Set(pendingPreContracts.map(pc => pc.player.id));
   const boughtIds = new Set();
-  let activeTab = 'acquisti';
+  // Giocatori all'ultimo anno di contratto (scadenza a fine di QUESTA
+  // stagione) con una squadra interessata (renewalInterest, calcolato in
+  // finishAndata prima di aprire questo modal): SOLO questi compaiono nella
+  // tab Rinnovi invernale — chi non ha suscitato interesse aspetta con
+  // calma la tab Rinnovi di fine stagione.
+  const winterRenewalDecisions = new Map(); // player.id → 'renewed'
+  const getWinterRenewals = () => playerTeam.roster.filter(p => p.contract?.duration === 1 && renewalInterest.has(p.id));
+  let activeTab = getWinterRenewals().length > 0 ? 'rinnovi' : 'acquisti';
   let loanCandidates = []; // ricostruito a ogni render della tab Prestiti: idx → { player, fromTeam }
   const filter = { role: '', ageMin: 16, ageMax: 40, strMin: 0, strMax: 100, availability: 'all' };
 
@@ -3822,6 +3839,25 @@ function showWinterMarketModal(onConfirm) {
       .map(p => ({ player: p, fromTeam: t }))
     )
     .sort((a, b) => b.player.strength - a.player.strength);
+
+  const buildRinnoviTab = () => {
+    const winterRenewals = getWinterRenewals();
+    if (!winterRenewals.length) return '<p class="mm-empty">Nessun contratto in scadenza a fine stagione con interesse da altre squadre.</p>';
+    return winterRenewals.map(player => {
+      const d = winterRenewalDecisions.get(player.id);
+      const demanded = getRenewalSalary(player);
+      const current = player.contract?.salary || getDisplaySalary(player.strength);
+      const interestedTeam = renewalInterest.get(player.id);
+      if (d === 'renewed') return `<div class="mm-row mm-done">✅ <strong>${player.firstName} ${player.lastName}</strong> rinnovato — ${formatMoneyK(annualSalary(demanded))}€/anno</div>`;
+      const overCap = !wageCapAllows(playerTeam, demanded, current);
+      const renewBtn = overCap
+        ? `<button class="mm-btn mm-green" disabled title="Supera il monte ingaggi">🚫 Monte ingaggi</button>`
+        : `${durationSelectHtml('data-dur-wrenew', player.id, player.contract?.duration)}<button class="mm-btn mm-green" data-action="wrenew" data-pid="${player.id}">Rinnova</button>`;
+      return `<div class="mm-row">
+        <div class="mm-pinfo">${formatNationality(player)}<span class="mm-name">${player.firstName} ${player.lastName}</span><span class="mm-badge role-${player.role}">${player.role}</span><span style="font-size:.78rem;color:#666">${formatSubRoles(player)}</span><span>${player.age}a</span><span>⚡${player.strength}</span><span class="mm-salary-chg">${formatMoneyK(annualSalary(current))}€ → <strong>${formatMoneyK(annualSalary(demanded))}€</strong>/anno</span><span style="font-size:.75rem;color:#2f6fed">🏟️ Se non rinnovi entro fine stagione, firma gratis con ${interestedTeam.name}</span></div>
+        <div class="mm-acts">${renewBtn}</div></div>`;
+    }).join('');
+  };
 
   const buildAcquistiTab = () => {
     let html = buildFilterBar(filter);
@@ -3950,7 +3986,7 @@ function showWinterMarketModal(onConfirm) {
 
       let panelRow = '';
       if (panel === 'renew') {
-        const previewSalary = getDisplaySalary(p.strength);
+        const previewSalary = getRenewalSalary(p);
         panelRow = `<tr class="rosa-panel-row"><td colspan="10">
           <strong>Rinnova ${p.firstName} ${p.lastName}</strong> — nuovo stipendio in base alla forza attuale: <strong>${formatMoneyK(annualSalary(previewSalary))}€/anno</strong>
           ${rosaRenewDurationSelectHtml(p.id, p.contract?.duration)}
@@ -3993,7 +4029,8 @@ function showWinterMarketModal(onConfirm) {
   };
 
   const render = (resetScroll) => {
-    const tabContent = activeTab === 'acquisti' ? buildAcquistiTab()
+    const tabContent = activeTab === 'rinnovi' ? buildRinnoviTab()
+      : activeTab === 'acquisti' ? buildAcquistiTab()
       : activeTab === 'precontratti' ? buildPreContrattiTab()
       : activeTab === 'prestiti' ? buildPrestitiTab()
       : buildRosaTab();
@@ -4005,6 +4042,7 @@ function showWinterMarketModal(onConfirm) {
     const prevScrollTop = resetScroll ? 0 : (overlay.querySelector('.mm-content')?.scrollTop || 0);
     const rosterCount = getEffectiveRosterCount(playerTeam);
     const belowMinRoster = rosterCount < PLAYER_ROSTER_MIN_TO_PROCEED;
+    const winterRenewPending = getWinterRenewals().filter(p => !winterRenewalDecisions.has(p.id)).length;
     overlay.innerHTML = `
       <div class="mm-box">
         <div class="mm-header">
@@ -4013,6 +4051,7 @@ function showWinterMarketModal(onConfirm) {
         </div>
         ${buildBudgetSliderHtml(playerTeam)}
         <div class="mm-tabs">
+          <button class="mm-tab${activeTab==='rinnovi'?' active':''}" data-tab="rinnovi">Rinnovi${winterRenewPending > 0 ? ` <span class="mm-badge-count">${winterRenewPending}</span>` : ''}</button>
           <button class="mm-tab${activeTab==='acquisti'?' active':''}" data-tab="acquisti">Acquisti</button>
           <button class="mm-tab${activeTab==='precontratti'?' active':''}" data-tab="precontratti">Pre-contratti${pendingPreContracts.length > 0 ? ` <span class="mm-badge-count" style="background:#15803d">${pendingPreContracts.length}</span>` : ''}</button>
           <button class="mm-tab${activeTab==='prestiti'?' active':''}" data-tab="prestiti">Prestiti <span class="mm-badge-count" style="background:#2f6fed">${getIncomingLoanCount(playerTeam)}/${MAX_INCOMING_LOANS}</span></button>
@@ -4040,7 +4079,21 @@ function showWinterMarketModal(onConfirm) {
         const id = +pid;
         if (action === 'filter-reset') return; // gestito da wireFilterBar
 
-        if (action === 'wm-buy-market') {
+        if (action === 'wrenew') {
+          const p = playerTeam.roster.find(x => x.id === id);
+          if (p) {
+            const demanded = getRenewalSalary(p);
+            const current = p.contract?.salary || getDisplaySalary(p.strength);
+            if (wageCapAllows(playerTeam, demanded, current)) {
+              if (!p.contract) p.contract = createContract(p.strength, p.age);
+              const years = +(overlay.querySelector(`select[data-dur-wrenew="${id}"]`)?.value) || 3;
+              p.contract.salary = demanded;
+              p.contract.duration = years;
+              transferLog.push(`📋 <em>${p.firstName} ${p.lastName}</em> rinnova con <strong>${playerTeam.name}</strong> — ${years} anni, ${formatMoneyK(annualSalary(demanded))}€/anno`);
+              winterRenewalDecisions.set(id, 'renewed');
+            }
+          }
+        } else if (action === 'wm-buy-market') {
           const p0 = findPlayerById(id);
           const fromTeam0 = p0 ? [...serieA, ...serieB, ...serieC].find(t => t !== playerTeam && t.roster.includes(p0)) : null;
           const item = (p0 && fromTeam0) ? { player: p0, fromTeam: fromTeam0, askingPrice: getTransferValue(p0) } : null;
@@ -4154,6 +4207,23 @@ function finishAndata() {
     if (t !== playerTeam) { ensureMinRoster(t); recalculateTeamStrength(t); }
   });
   if (playerTeam) {
+    // Interesse gratuito sui giocatori all'ULTIMO anno di contratto (in
+    // scadenza a fine di QUESTA stagione, duration===1): deciso qui, in
+    // inverno, non più a fine stagione — se non rinnovati entro allora,
+    // STEP 1d (updateTeamStrengths) li farà partire subito per la squadra
+    // interessata invece di farli comparire nella tab Rinnovi estiva, che
+    // resta riservata solo a chi non ha suscitato interesse.
+    renewalInterest = new Map();
+    const winterAiTeams = [...serieA, ...serieB, ...serieC].filter(t => t !== playerTeam);
+    playerTeam.roster
+      .filter(p => p.contract?.duration === 1 && p.role !== 'POR')
+      .forEach(player => {
+        if (Math.random() > 0.35) return;
+        const interested = winterAiTeams.filter(t => canAddRole(t, player.role) && canTeamAcquirePlayer(t, player) && fitsLeagueStrength(player.strength, t.leagueLevel));
+        if (!interested.length) return;
+        renewalInterest.set(player.id, interested[Math.floor(Math.random() * interested.length)]);
+      });
+
     showWinterMarketModal(() => {
       recalculateTeamStrength(playerTeam);
       seasonPhase = 2;
@@ -4812,8 +4882,14 @@ function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newS
           if (player.age >= 36) {
             // Si ritirerà in Step 2 — niente rinnovo
             transferLog.push(`🎓 <em>${player.firstName} ${player.lastName}</em> si ritirerà a fine stagione — nessun rinnovo necessario`);
+          } else if (renewalInterest.has(player.id)) {
+            // Interesse emerso e non risolto durante il mercato invernale
+            // (tab Rinnovi lì, vedi finishAndata): il giocatore parte SUBITO
+            // per la squadra interessata, non passa dalla tab Rinnovi di fine
+            // stagione — quella resta riservata a chi non ha suscitato interesse.
+            resolveExpiringPlayerDeparture(player);
           } else {
-            pendingRenewals.push(player); // Il giocatore decide nel modal
+            pendingRenewals.push(player); // Il giocatore decide nel modal, con calma
           }
         } else {
           const renewed = tryRenewContract(player, team);
@@ -5544,7 +5620,7 @@ function executeEarlyRelease(player) {
 // col tetto ROSA_RENEW_MAX_TOTAL_YEARS già garantito a monte dalle opzioni
 // mostrate in rosaRenewDurationSelectHtml.
 function executeAnytimeRenew(player, years) {
-  const newSalary = getDisplaySalary(player.strength);
+  const newSalary = getRenewalSalary(player);
   if (!wageCapAllows(playerTeam, newSalary, player.contract?.salary || 0)) return false;
   const baseDuration = player.contract?.duration || 0;
   if (!player.contract) player.contract = createContract(player.strength, player.age);
@@ -5663,16 +5739,13 @@ function showManagerMarketModal(onConfirm) {
       pendingAIOffers.push({ player, buyerTeam: buyer, offerPrice });
     });
 
-  // Interesse gratuito sui giocatori in scadenza: se non vengono rinnovati,
-  // firmano subito con la squadra interessata (parametro zero, nessuna
-  // cessione a pagamento) invece di finire genericamente tra gli svincolati.
-  renewalInterest = new Map();
-  pendingRenewals.forEach(player => {
-    if (player.role === 'POR' || Math.random() > 0.35) return;
-    const interested = aiTeams.filter(t => canAddRole(t, player.role) && canTeamAcquirePlayer(t, player) && fitsLeagueStrength(player.strength, t.leagueLevel));
-    if (!interested.length) return;
-    renewalInterest.set(player.id, interested[Math.floor(Math.random() * interested.length)]);
-  });
+  // NB: l'eventuale interesse di un'altra squadra su un giocatore in scadenza
+  // (renewalInterest) viene ormai deciso PRIMA, nel mercato invernale (vedi
+  // finishAndata) — qui in pendingRenewals arrivano per costruzione SOLO i
+  // giocatori che NON hanno suscitato interesse (STEP 1d in updateTeamStrengths
+  // fa già partire subito, senza passare da qui, chi era interessato e non è
+  // stato rinnovato in inverno): la tab Rinnovi di fine stagione resta quindi
+  // sempre "tranquilla", senza mai mostrare "Se non rinnovi, firma gratis con...".
 
   pendingForeignScoutTargets = playerTeam.leagueLevel === 'A' ? generateForeignScoutTargets() : [];
 
@@ -5731,8 +5804,7 @@ function showManagerMarketModal(onConfirm) {
     if (!pendingRenewals.length) return '<p class="mm-empty">Nessun contratto in scadenza.</p>';
     return pendingRenewals.map(player => {
       const d = renewalDecisions.get(player.id);
-      const greed = player.personality?.greed || 50;
-      const demanded = Math.round(getDisplaySalary(player.strength) * (1.0 + greed * 0.004));
+      const demanded = getRenewalSalary(player);
       const current  = player.contract?.salary || getDisplaySalary(player.strength);
       const interestedTeam = renewalInterest.get(player.id);
       if (d === 'renewed') return `<div class="mm-row mm-done">✅ <strong>${player.firstName} ${player.lastName}</strong> rinnovato — ${formatMoneyK(annualSalary(demanded))}€/anno</div>`;
@@ -5883,7 +5955,7 @@ function showManagerMarketModal(onConfirm) {
 
       let panelRow = '';
       if (panel === 'renew') {
-        const previewSalary = getDisplaySalary(p.strength);
+        const previewSalary = getRenewalSalary(p);
         panelRow = `<tr class="rosa-panel-row"><td colspan="10">
           <strong>Rinnova ${p.firstName} ${p.lastName}</strong> — nuovo stipendio in base alla forza attuale: <strong>${formatMoneyK(annualSalary(previewSalary))}€/anno</strong>
           ${rosaRenewDurationSelectHtml(p.id, p.contract?.duration)}
@@ -6276,8 +6348,7 @@ function showManagerMarketModal(onConfirm) {
         if (action === 'renew') {
           const p = pendingRenewals.find(p => p.id === id);
           if (p) {
-            const greed = p.personality?.greed || 50;
-            const demanded = Math.round(getDisplaySalary(p.strength) * (1.0 + greed * 0.004));
+            const demanded = getRenewalSalary(p);
             const current = p.contract?.salary || getDisplaySalary(p.strength);
             if (wageCapAllows(playerTeam, demanded, current)) {
               if (!p.contract) p.contract = createContract(p.strength, p.age);
