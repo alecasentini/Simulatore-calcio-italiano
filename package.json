@@ -1,0 +1,8 @@
+{
+  "name": "simulatore-calcio-italiano-tools",
+  "private": true,
+  "description": "Dipendenze per gli script di supporto in tools/ (il gioco stesso non ha build step, gira via file:// da index.html).",
+  "devDependencies": {
+    "playwright": "^1.61.1"
+  }
+}

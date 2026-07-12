@@ -1827,9 +1827,9 @@ function showMatchDetailModal(match) {
   overlay.innerHTML = `
     <div class="mm-box md-box">
       <div class="md-score-header">
-        <span class="md-team-name">${match.team1.name}</span>
+        <span class="md-team-name">${teamLogoOrJerseyHtml(match.team1, false, false)}<span>${match.team1.name}</span></span>
         <span class="md-score">${r.team1Goals}–${r.team2Goals}</span>
-        <span class="md-team-name md-team-right">${match.team2.name}</span>
+        <span class="md-team-name md-team-right"><span>${match.team2.name}</span>${teamLogoOrJerseyHtml(match.team2, false, false)}</span>
       </div>
       <div class="md-formations">${fm1} &nbsp;vs&nbsp; ${fm2}</div>
       ${lineupsHtml}
@@ -1845,6 +1845,8 @@ function showMatchDetailModal(match) {
   overlay.querySelector('#md-close').addEventListener('click', () => overlay.remove());
   overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
   document.body.appendChild(overlay);
+
+  wireTeamLogoFallbacks(overlay);
 }
 
 function displaySingleMatchday(containerId, round, matchdayNumber, phase) {
@@ -2128,6 +2130,128 @@ function simulateCoppaItalia(serieA, serieB) {
 
 const LEAGUE_LABEL_BY_CONTAINER = { serieA: 'Serie A', serieB: 'Serie B', serieC: 'Serie C' };
 
+// Logo squadra (assets/loghi/): manifest ESPLICITO nome-squadra→file
+// esistente, generato scansionando la cartella (scratchpad/pixelate-logos.js
+// stampa l'oggetto aggiornato) — niente più tentativi "a indovinare"
+// estensione/variante nome (che riempivano la console di 404 per ogni
+// squadra ancora senza logo). Rilanciare lo script e incollare qui il nuovo
+// oggetto ogni volta che si aggiunge/rinomina/sostituisce un file in
+// assets/loghi/. Tutte le squadre nel manifest hanno anche una versione
+// pixel art in assets/loghi/pixel/{slug}.png (generata dallo stesso script).
+const TEAM_LOGO_FILES = {
+  'alessandria': 'alessandria.png',
+  'ascoli': 'ascoli.png',
+  'atalanta': 'atalanta.webp',
+  'avellino': 'avellino.png',
+  'bari': 'bari.svg',
+  'benevento': 'benevento.png',
+  'bologna': 'bologna.png',
+  'brescia': 'brescia.png',
+  'cagliari': 'cagliari.webp',
+  'catania': 'catania.webp',
+  'catanzaro': 'catanzaro.png',
+  'cesena': 'cesena.png',
+  'chievo': 'chievo.jpg',
+  'cittadella': 'cittadella.png',
+  'como': 'como.png',
+  'cosenza': 'cosenza.png',
+  'cremonese': 'cremonese.webp',
+  'empoli': 'empoli.png',
+  'entella': 'entella.webp',
+  'fiorentina': 'fiorentina.webp',
+  'foggia': 'foggia.png',
+  'frosinone': 'frosinone.webp',
+  'genoa': 'genoa.webp',
+  'hellas-verona': 'hellas verona.png',
+  'inter': 'inter.webp',
+  'juventus': 'juventus.webp',
+  'lazio': 'lazio.webp',
+  'lecce': 'lecce.webp',
+  'lecco': 'lecco.webp',
+  'livorno': 'livorno.webp',
+  'lucchese': 'lucchese.png',
+  'messina': 'messina.png',
+  'milan': 'milan.png',
+  'modena': 'modena.png',
+  'monza': 'monza.png',
+  'napoli': 'napoli.webp',
+  'novara': 'novara.jpg',
+  'padova': 'padova.jpg',
+  'palermo': 'palermo.svg',
+  'parma': 'parma.webp',
+  'perugia': 'perugia.png',
+  'pescara': 'pescara.webp',
+  'piacenza': 'piacenza.webp',
+  'pisa': 'pisa.png',
+  'pro-patria': 'pro-patria.png',
+  'reggiana': 'reggiana.png',
+  'reggina': 'reggina.png',
+  'roma': 'roma.webp',
+  'salernitana': 'salernitana.webp',
+  'sampdoria': 'sampdoria.png',
+  'sassuolo': 'sassuolo.png',
+  'siena': 'siena.jpg',
+  'spal': 'spal.webp',
+  'ternana': 'ternana.png',
+  'torino': 'torino.png',
+  'triestina': 'triestina.webp',
+  'udinese': 'udinese.png',
+  'varese': 'varese.webp',
+  'venezia': 'venezia.png',
+  'vicenza': 'vicenza.png',
+};
+// `usePixel` (bool): includere la versione pixel art (assets/loghi/pixel/)
+// come primo candidato. A piccola dimensione (classifica, selezione squadra)
+// l'originale a piena risoluzione resta più leggibile della versione
+// pixelata pensata per essere vista grande — lì si salta direttamente
+// all'originale.
+function getTeamLogoCandidates(teamName, usePixel) {
+  const slug = teamName.toLowerCase().replace(/\s+/g, '-');
+  const rawFile = TEAM_LOGO_FILES[slug];
+  if (!rawFile) return []; // nessun logo per questa squadra: fallback diretto, zero richieste
+  const candidates = [];
+  if (usePixel) candidates.push(`assets/loghi/pixel/${slug}.png`);
+  candidates.push(`assets/loghi/${rawFile}`);
+  return candidates;
+}
+// `large` (bool): variante grande per l'header della scheda squadra, invece
+// della piccola icona inline usata in classifica/selezione squadra.
+// `usePixel` (bool, default true): vedi getTeamLogoCandidates.
+function teamLogoOrJerseyHtml(team, large, usePixel) {
+  const [c1, c2] = team.colors || ['#888', '#aaa'];
+  const sizeClass = large ? ' team-logo-wrap-lg' : '';
+  const candidates = getTeamLogoCandidates(team.name, usePixel !== false);
+  if (!candidates.length) {
+    // Nessun logo in TEAM_LOGO_FILES per questa squadra: quadratino colorato
+    // diretto, senza alcun tentativo di caricamento immagine.
+    return `<span class="team-logo-wrap${sizeClass}"><span class="jersey-icon" style="background:linear-gradient(90deg,${c1} 50%,${c2} 50%);width:100%;height:100%;margin:0"></span></span>`;
+  }
+  const jerseyHtml = `<span class="jersey-icon" style="background:linear-gradient(90deg,${c1} 50%,${c2} 50%);display:none;margin:0;position:absolute;top:0;left:0;width:100%;height:100%"></span>`;
+  const firstSrc = candidates[0];
+  const remaining = candidates.slice(1).join('|');
+  return `<span class="team-logo-wrap${sizeClass}">
+    <img class="team-logo-img" src="${firstSrc}" data-logo-remaining="${remaining}" alt="">
+    ${jerseyHtml}
+  </span>`;
+}
+function wireTeamLogoFallbacks(container) {
+  container.querySelectorAll('.team-logo-img').forEach(img => {
+    img.addEventListener('error', function onLogoError() {
+      const remaining = img.dataset.logoRemaining ? img.dataset.logoRemaining.split('|') : [];
+      const next = remaining.shift();
+      img.dataset.logoRemaining = remaining.join('|');
+      if (next) {
+        img.src = next;
+      } else {
+        img.removeEventListener('error', onLogoError);
+        img.style.display = 'none';
+        const fallback = img.nextElementSibling;
+        if (fallback) fallback.style.display = 'inline-block';
+      }
+    });
+  });
+}
+
 function displayStandings(containerId, standingsData, halfSeason = false) {
   const container = document.getElementById(containerId);
   // Rimuovi classifica precedente se esiste (evita duplicati tra andata e ritorno)
@@ -2152,13 +2276,11 @@ function displayStandings(containerId, standingsData, halfSeason = false) {
   standingsArray.forEach((team, index) => {
     const row = table.insertRow();
 
-    // Crea l'icona della maglietta
-    let jerseyIconHtml = '';
-    if (team.colors && team.colors.length > 0) {
-      // Usa un gradiente per due colori, o un colore solido se ce n'è uno solo
-      const backgroundStyle = `background: linear-gradient(90deg, ${team.colors[0]} 50%, ${team.colors[1] || team.colors[0]} 50%);`;
-      jerseyIconHtml = `<span class="jersey-icon" style="${backgroundStyle}"></span>`;
-    }
+    // Crea l'icona della squadra: logo se disponibile (assets/loghi/), con
+    // fallback automatico al quadratino colorato se il file manca/non carica.
+    // Qui l'icona è piccola: si usa l'originale a piena risoluzione, non la
+    // versione pixel art (pensata per essere vista grande nella scheda squadra).
+    const jerseyIconHtml = teamLogoOrJerseyHtml(team, false, false);
 
     // Crea il contenuto della cella della squadra con l'icona
     const magnateIcon = team.magnate ? ' ⭐' : '';
@@ -2184,6 +2306,8 @@ function displayStandings(containerId, standingsData, halfSeason = false) {
   standingsDiv.appendChild(table);
   container.appendChild(standingsDiv);
 
+  wireTeamLogoFallbacks(standingsDiv);
+
   // Aggiunge gli event listener per il popup dei dettagli squadra
   standingsDiv.querySelectorAll('.team-name-clickable').forEach(el => {
     el.addEventListener('click', (e) => {
@@ -2207,8 +2331,7 @@ function displayPreSeasonStandings(containerId, teams) {
   table.innerHTML = '<tr><th>#</th><th>Squadra</th><th>Forza</th><th>Obiettivo</th><th>Budget</th></tr>';
 
   sorted.forEach((team, idx) => {
-    const [c1, c2] = team.colors || ['#888', '#aaa'];
-    const jersey = `<span class="jersey-icon" style="background:linear-gradient(90deg,${c1} 50%,${c2} 50%)"></span>`;
+    const jersey = teamLogoOrJerseyHtml(team, false, false);
     const magnate = team.magnate ? ' ⭐' : '';
     const nameLink = `<span class="team-name-clickable" data-team-name="${team.name}">${team.name}</span>`;
     const obj = team.objective?.description || '—';
@@ -2221,6 +2344,8 @@ function displayPreSeasonStandings(containerId, teams) {
 
   div.appendChild(table);
   container.appendChild(div);
+
+  wireTeamLogoFallbacks(div);
 
   div.querySelectorAll('.team-name-clickable').forEach(el => {
     el.addEventListener('click', e => showTeamDetailsModal(e.currentTarget.dataset.teamName));
@@ -2408,6 +2533,7 @@ function showTeamDetailsModal(teamName) {
 
   const modalBody = document.getElementById('modal-body');
   modalBody.innerHTML = `
+      ${teamLogoOrJerseyHtml(team, true)}
       <h3>${team.name} - Palmarès e Storico</h3>
       <h4>Titoli Vinti</h4>
       <ul>
@@ -2438,6 +2564,8 @@ function showTeamDetailsModal(teamName) {
       </table>`;
 
   document.getElementById('team-details-modal').style.display = 'flex';
+
+  wireTeamLogoFallbacks(modalBody);
 
   // Rendi le righe della rosa clickable per aprire la scheda giocatore
   modalBody.querySelectorAll('tr[data-player-id]').forEach(tr => {
@@ -3261,10 +3389,9 @@ function showJobOffersModal(offers, onDone) {
   overlay.className = 'mm-overlay';
 
   const offerRows = offers.map((o, i) => {
-    const [c1, c2] = o.team.colors || ['#888', '#aaa'];
     return `<div class="mm-row">
       <div class="mm-pinfo">
-        <span class="ts-jersey" style="background:linear-gradient(90deg,${c1} 50%,${c2} 50%)"></span>
+        ${teamLogoOrJerseyHtml(o.team, false, false)}
         <span class="mm-name">${o.team.name}</span>
         <span class="mm-badge">Serie ${o.team.leagueLevel}</span>
         <span>⚡${o.team.strength}</span>
@@ -3290,6 +3417,8 @@ function showJobOffersModal(offers, onDone) {
         <button class="mm-btn mm-red" id="jo-decline">Rifiuta tutte</button>
       </div>
     </div>`;
+
+  wireTeamLogoFallbacks(overlay);
 
   overlay.querySelectorAll('[data-offer-idx]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -3317,10 +3446,9 @@ function showJobMarketBrowserModal() {
   overlay.className = 'mm-overlay';
 
   const offerRows = offers.map((o, i) => {
-    const [c1, c2] = o.team.colors || ['#888', '#aaa'];
     return `<div class="mm-row">
       <div class="mm-pinfo">
-        <span class="ts-jersey" style="background:linear-gradient(90deg,${c1} 50%,${c2} 50%)"></span>
+        ${teamLogoOrJerseyHtml(o.team, false, false)}
         <span class="mm-name">${o.team.name}</span>
         <span class="mm-badge">Serie ${o.team.leagueLevel}</span>
         <span>⚡${o.team.strength}</span>
@@ -3351,6 +3479,8 @@ function showJobMarketBrowserModal() {
         <button class="mm-btn mm-confirm" id="jm-stay">${playerTeam ? 'Resta al club attuale' : 'Chiudi'}</button>
       </div>
     </div>`;
+
+  wireTeamLogoFallbacks(overlay);
 
   overlay.querySelectorAll('[data-offer-idx]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -3587,11 +3717,6 @@ function showDSCareerModal() {
 
 // ─── AVVIO CARRIERA / SELEZIONE SQUADRA ───────────────────────────────────────
 function showTeamSelectionScreen() {
-  const makeJersey = (colors) => {
-    const [c1, c2] = colors || ['#888', '#aaa'];
-    return `<span class="ts-jersey" style="background:linear-gradient(90deg,${c1} 50%,${c2} 50%)"></span>`;
-  };
-
   const overlay = document.createElement('div');
   overlay.id = 'team-selection-overlay';
   document.body.appendChild(overlay);
@@ -3685,7 +3810,7 @@ function showTeamSelectionScreen() {
     const makeCol = (title, teams) => {
       const btns = teams.map(t =>
         `<button class="ts-team-btn" data-team-name="${t.name}">
-          ${makeJersey(t.colors)}<span>${t.name}</span>
+          ${teamLogoOrJerseyHtml(t, false, false)}<span>${t.name}</span>
         </button>`
       ).join('');
       return `<div class="ts-league-col"><h2>${title}</h2>${btns}</div>`;
@@ -3698,6 +3823,7 @@ function showTeamSelectionScreen() {
         ${makeCol('Serie B', serieB)}
         ${makeCol('Serie C', serieC)}
       </div>`;
+    wireTeamLogoFallbacks(overlay);
     overlay.querySelectorAll('.ts-team-btn[data-team-name]').forEach(btn => {
       btn.addEventListener('click', () => {
         const team = [...serieA, ...serieB, ...serieC].find(t => t.name === btn.dataset.teamName);
@@ -3731,23 +3857,20 @@ function showMyTeamBadge() {
     badge.addEventListener('click', () => { if (dsCareer) showDSCareerModal(); });
     document.body.appendChild(badge);
   }
-  const jersey = t => {
-    const [c1, c2] = t.colors || ['#888', '#aaa'];
-    return `<span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:linear-gradient(90deg,${c1} 50%,${c2} 50%);margin-right:6px;vertical-align:middle"></span>`;
-  };
   if (dsCareer) {
     const teamPart = playerTeam
-      ? `${jersey(playerTeam)}${playerTeam.name} · ${Math.max(0, dsCareer.contractYears)}a`
+      ? `${teamLogoOrJerseyHtml(playerTeam, false, false)}${playerTeam.name} · ${Math.max(0, dsCareer.contractYears)}a`
       : '<em>senza squadra</em>';
     badge.innerHTML = `👔 <strong>${dsCareer.firstName} ${dsCareer.lastName}</strong> · Rep ${dsCareer.reputation} — ${teamPart}`;
     badge.style.cursor = 'pointer';
     badge.title = 'Clicca per vedere la tua carriera';
   } else {
-    badge.innerHTML = `${jersey(playerTeam)}${playerTeam.name}`;
+    badge.innerHTML = `${teamLogoOrJerseyHtml(playerTeam, false, false)}${playerTeam.name}`;
     badge.style.cursor = 'default';
     badge.title = '';
   }
   badge.style.display = 'block';
+  wireTeamLogoFallbacks(badge);
 }
 
 // Mostra la schermata di selezione all'avvio
