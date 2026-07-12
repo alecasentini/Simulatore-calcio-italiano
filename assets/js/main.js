@@ -100,6 +100,21 @@ let renewalInterest = new Map(); // player.id → squadra interessata a prenderl
 let pendingTransferMarket = [];  // giocatori rimasti sul mercato dopo le trattative AI
 let pendingForeignScoutTargets = []; // 20 talenti stranieri scovati dall'area scout (solo Serie A)
 let pendingPreContracts = [];    // { player, fromTeam } — pre-contratti firmati nel mercato invernale
+// Hook di osservabilità per gli script diagnostici: se impostato (array) da
+// fuori (es. `__marketStatsSink = []` in un driver Node), riceve
+// {team, gain, cost, score} per ogni bersaglio di mercato scorato dalla CPU
+// (STEP 6b/6b-bis, mercato invernale) — null in gioco normale, nessun costo.
+let __marketStatsSink = null;
+// Hook gemello: se impostato (Map team.name -> count), viene incrementato
+// ogni volta che una squadra supera il proprio skip-chance di partecipazione
+// al mercato (STEP 6b/6b-bis/invernale), A PRESCINDERE dal fatto che trovi
+// poi davvero un bersaglio — isola l'effetto di getMarketAggressiveness
+// sulla partecipazione dai vincoli a valle (tetti di forza, ruoli saturi).
+let __marketAttemptsSink = null;
+function __recordMarketAttempt(team) {
+  if (!__marketAttemptsSink) return;
+  __marketAttemptsSink.set(team.name, (__marketAttemptsSink.get(team.name) || 0) + 1);
+}
 
 // Prestiti attivi: durano una stagione, si risolvono in automatico all'inizio
 // del mercato estivo successivo (STEP 0 di updateTeamStrengths). Coinvolgono
@@ -905,6 +920,125 @@ function getSquadSurplus(team) {
   if (!team.roster || team.roster.length <= 22) return [];
   const { starters, reserves } = getSquadTiers(team);
   return team.roster.filter(p => !starters.has(p) && !reserves.has(p));
+}
+
+// Audit dei "buchi" di una squadra secondo il modulo dell'allenatore: usata
+// dal mercato CPU per decidere COSA comprare (non solo chi vendere, come
+// getSquadSurplus). Due canali:
+// 1) slot titolari già occupati ma fuori posizione/ruolo (malus di fit) —
+//    severity 10 se fuori ruolo, 5 se solo fuori posizione (stessa scala di
+//    FIT_STRENGTH_MULT).
+// 2) profondità panchina: per ruolo, se la forza effettiva media dei
+//    riservisti è sotto il 70% di quella dei titolari (o non ce ne sono
+//    proprio), segnala un bisogno di profondità — meno urgente di un buco
+//    vero in undici, quindi severity più bassa (15, o 25 se il ruolo non ha
+//    NESSUN riservista).
+// Ritorna [{role, subRole, fit, severity, incumbent, isReserveGap}] ordinato
+// per severity decrescente. Pura, nessuna mutazione della rosa.
+function getTeamNeeds(team) {
+  const formation = team.coach?.formation || '4-4-2';
+  const best11 = getBest11(team.roster, formation);
+  const { reserves } = getSquadTiers(team);
+  const reserveList = [...reserves];
+  const needs = [];
+
+  best11.forEach(({ player, fit }) => {
+    if (fit === 'position') return;
+    const severity = fit === 'outOfRole' ? 10 : 5;
+    const subroleSlots = FORMATION_SUBROLES[formation]?.[player.role] || [];
+    const missingSubrole = subroleSlots.find(s => !(player.subRoles || []).includes(s)) || null;
+    needs.push({ role: player.role, subRole: missingSubrole, fit, severity, incumbent: player, isReserveGap: false });
+  });
+
+  ['DIF', 'CEN', 'ATT'].forEach(role => {
+    const starterEntries = best11.filter(e => e.player.role === role);
+    if (!starterEntries.length) return;
+    const reserveEntries = reserveList.filter(p => p.role === role);
+    const avgStarter = starterEntries.reduce((s, e) => s + getPlayerEffectiveStrength(e.player), 0) / starterEntries.length;
+    const avgReserve = reserveEntries.length
+      ? reserveEntries.reduce((s, p) => s + getPlayerEffectiveStrength(p), 0) / reserveEntries.length
+      : 0;
+    if (avgReserve < avgStarter * 0.70) {
+      needs.push({ role, subRole: null, fit: null, severity: reserveEntries.length ? 15 : 25, incumbent: null, isReserveGap: true });
+    }
+  });
+
+  return needs.sort((a, b) => b.severity - a.severity);
+}
+
+// Punteggio di un possibile acquisto: quanto migliora la forza effettiva
+// TOTALE schierata dalla squadra (getBest11, prima/dopo aggiunta ipotetica
+// del giocatore), diviso il costo stimato (cartellino + una frazione dello
+// stipendio sui prossimi anni). Se il giocatore non entrerebbe nemmeno in
+// undici, si rivaluta lo stesso guadagno marginale sulle SOLE riserve (peso
+// ridotto ×0.35 — un buon rincalzo vale, ma meno di un titolare vero).
+// Ritorna null se il giocatore non è nemmeno eleggibile per la rosa.
+function evaluateTransferTarget(team, player, cost) {
+  if (!canAddRole(team, player.role) || !canTeamAcquirePlayer(team, player)) return null;
+  const formation = team.coach?.formation || '4-4-2';
+  const weighTeam = (entries) => entries.reduce((s, e) => s + getPlayerEffectiveStrength(e.player) * FIT_STRENGTH_MULT[e.fit], 0);
+
+  const before = weighTeam(getBest11(team.roster, formation));
+  const after = weighTeam(getBest11([...team.roster, player], formation));
+  let gain = after - before;
+
+  if (gain <= 0) {
+    const { reserves } = getSquadTiers(team);
+    const reserveRoster = [...reserves];
+    const beforeR = weighTeam(getBest11(reserveRoster, formation));
+    const afterR = weighTeam(getBest11([...reserveRoster, player], formation));
+    gain = Math.max(0, afterR - beforeR) * 0.35;
+  }
+
+  // Costo stimato: cartellino + 15% dello stipendio annuo su una finestra
+  // "tipica" di 3 anni — pesa il salario senza farlo dominare sul fee (stessa
+  // scala M€ del cartellino, stipendio convertito da k€/mese ad annuo/1000).
+  const salaryK = getRenewalSalary(player);
+  const estimatedWageCostM = annualSalary(salaryK) / 1000 * 3 * 0.15;
+  const totalCost = Math.max(0.1, cost + estimatedWageCostM);
+
+  return { gain, cost: totalCost, score: gain / totalCost };
+}
+
+// Sceglie il miglior bersaglio di mercato fra i candidati, per guadagno
+// marginale/costo (evaluateTransferTarget). Shortlist: prima priorità ai
+// ruoli davvero bisognosi (getTeamNeeds), poi pre-cap a 40 e pre-ordinamento
+// per forza grezza prima di scorare solo i 15 migliori — tiene il costo
+// O(15 × getBest11) per chiamata invece di O(N), a prescindere da quanto è
+// grande il pool di candidati.
+// La forza del DS (team.ds.strength) diventa "qualità di esecuzione": un DS
+// forte (100) sceglie sempre il vero miglior punteggio, uno debole (≤25) ha
+// fino a ±35% di rumore moltiplicativo sullo score — a volte sbaglia il
+// pick migliore tra i primi della shortlist, ma raramente un bersaglio
+// insensato (la shortlist è già pre-filtrata su bisogno+forza).
+// `statsSink`, se passato (array), riceve {team, gain, cost, score} per ogni
+// candidato scorato — usato dagli script diagnostici per osservare la
+// qualità dei bersagli senza duplicare la logica di scoring.
+function pickBestTransferTarget(team, candidates, statsSink) {
+  if (!candidates || !candidates.length) return null;
+  const needs = getTeamNeeds(team);
+  const needRoles = new Set(needs.map(n => n.role));
+
+  const shortlist = candidates
+    .filter(c => needRoles.size === 0 || needRoles.has(c.player.role) || Math.random() < 0.2)
+    .slice(0, 40)
+    .sort((a, b) => b.player.strength - a.player.strength)
+    .slice(0, 15);
+
+  const scored = shortlist
+    .map(c => ({ ...c, ev: evaluateTransferTarget(team, c.player, c.cost) }))
+    .filter(c => c.ev && c.ev.gain > 0);
+  if (!scored.length) return null;
+
+  const dsStrength = team.ds?.strength ?? 50;
+  const noiseAmplitude = Math.max(0, (60 - dsStrength) / 60) * 0.35;
+  scored.forEach(c => {
+    c.noisyScore = c.ev.score * (1 + (Math.random() * 2 - 1) * noiseAmplitude);
+    if (statsSink) statsSink.push({ team: team.name, gain: c.ev.gain, cost: c.ev.cost, score: c.ev.score });
+  });
+
+  scored.sort((a, b) => b.noisyScore - a.noisyScore);
+  return scored[0];
 }
 
 // Su quanti dei 10 slot di movimento (portiere escluso) il modulo scelto
@@ -3016,6 +3150,20 @@ function estimateObjectiveGlobalTier(team) {
   return leagueBase + objectiveTierFromRank(rank, n, team.leagueLevel);
 }
 
+// Quanto è aggressiva una squadra sul mercato (moltiplicatore 0.5-1.6 sulle
+// soglie di partecipazione del mercato CPU, vedi STEP 6b/runWinterAITransfers):
+// combina ambizione di stagione (estimateObjectiveGlobalTier, 1-12) e
+// generosità del presidente. NON tocca i tetti budget/monte ingaggi esistenti
+// (quelli restano governati da briefPresidentBudget) — modula solo quanto
+// spesso la squadra tenta un acquisto.
+function getMarketAggressiveness(team) {
+  const tier = estimateObjectiveGlobalTier(team);
+  const gen = team.president?.personality?.generosity ?? 50;
+  const tierFactor = 0.70 + (tier - 1) / 11 * 0.60; // 0.70 (tier1) .. 1.30 (tier12)
+  const genFactor = 0.85 + gen / 100 * 0.30;         // 0.85 .. 1.15
+  return Math.max(0.5, Math.min(1.6, tierFactor * genFactor));
+}
+
 // Genera le offerte di lavoro per il DS umano in base alla reputazione.
 // La reputazione parte da 40 (JOB_OFFER_REP_BASE) e il tetto è 100: un range
 // di 60 punti diviso in scaglioni da 5 (JOB_OFFER_REP_STEP) fa esattamente 12
@@ -3687,23 +3835,28 @@ function runWinterAITransfers() {
   // estivo: altrimenti "Sul mercato" risultava quasi sempre vuoto.
   if (playerTeam) pendingTransferMarket = [...winterMarket];
 
-  // Step 2: ~60% delle squadre AI compra dal mercato invernale o uno svincolato (era 35%)
+  // Step 2: acquisto dal mercato invernale o uno svincolato — partecipazione
+  // modulata da ambizione stagione/generosità presidente (era fisso 60%).
   aiTeams.forEach(team => {
-    if (Math.random() > 0.60) return;
+    const winterSkipChance = Math.max(0.4, Math.min(0.85, 0.60 * getMarketAggressiveness(team)));
+    if (Math.random() > winterSkipChance) return;
+    __recordMarketAttempt(team);
     if (team.budget < 2) return;
 
     const cap = leagueStrCap(team.leagueLevel);
-    const options = winterMarket.filter(item =>
-      item.fromTeam !== team &&
-      team.budget >= item.askingPrice &&
-      item.player.strength > (team.strength || 50) * 0.6 &&
-      item.player.strength <= cap &&
-      canAddRole(team, item.player.role) &&
-      canTeamAcquirePlayer(team, item.player)
-    ).sort((a, b) => b.player.strength - a.player.strength);
+    const options = winterMarket
+      .filter(item =>
+        item.fromTeam !== team &&
+        team.budget >= item.askingPrice &&
+        item.player.strength <= cap &&
+        canAddRole(team, item.player.role) &&
+        canTeamAcquirePlayer(team, item.player)
+      )
+      .map(item => ({ player: item.player, cost: item.askingPrice, item }));
 
-    if (options.length) {
-      const deal = options[0];
+    const bestOption = pickBestTransferTarget(team, options, __marketStatsSink);
+    if (bestOption) {
+      const deal = bestOption.item;
       winterMarket.splice(winterMarket.indexOf(deal), 1);
       team.roster.push(deal.player);
       team.budget -= deal.askingPrice;
@@ -3713,11 +3866,12 @@ function runWinterAITransfers() {
       transferLog.push(`❄️ <em>Mercato invernale</em>: <strong>${deal.fromTeam.name}</strong> → <strong>${team.name}</strong>: ${deal.player.firstName} ${deal.player.lastName} per <strong>${deal.askingPrice.toFixed(1)}M€</strong>`);
     } else {
       // Prova a ingaggiare uno svincolato
-      const fa = freeAgents
-        .filter(p => p.role !== 'POR' && canAddRole(team, p.role) && canTeamAcquirePlayer(team, p) && p.strength >= (team.strength || 50) * 0.5 && p.strength <= cap)
-        .sort((a, b) => b.strength - a.strength)[0];
-      if (fa) {
-        freeAgents.splice(freeAgents.indexOf(fa), 1);
+      const faOptions = freeAgents
+        .map((p, i) => ({ player: p, cost: 0, i }))
+        .filter(({ player: p }) => p.role !== 'POR' && canAddRole(team, p.role) && canTeamAcquirePlayer(team, p) && p.strength <= cap);
+      const bestFa = pickBestTransferTarget(team, faOptions, __marketStatsSink);
+      if (bestFa) {
+        const fa = freeAgents.splice(bestFa.i, 1)[0];
         team.roster.push(fa);
         recalculateTeamStrength(team);
         recordTransfer(fa, team.name, 0);
@@ -3733,14 +3887,20 @@ function runWinterAITransfers() {
   aiTeams.forEach(team => {
     if (team.leagueLevel !== 'A' || !canBuyForeignPlayer(team)) return;
     if (team.budget < 3) return;
-    if (Math.random() > 0.30) return; // 30% delle squadre di A idonee tenta un acquisto estero
+    const foreignWinterSkipChance = Math.max(0.15, Math.min(0.55, 0.30 * getMarketAggressiveness(team)));
+    if (Math.random() > foreignWinterSkipChance) return;
+    __recordMarketAttempt(team);
     const cand = generateForeignCandidate();
-    if (cand.strength > (team.strength || 50) * 0.6 && canAddRole(team, cand.role) && team.budget >= cand.cost) {
-      const player = materializeForeignCandidate(cand, team);
-      team.roster.push(player);
-      team.budget -= cand.cost;
-      recalculateTeamStrength(team);
-      transferLog.push(`❄️ <em>Mercato invernale</em>: <strong>${team.name}</strong> acquista ${player.firstName} ${player.lastName} (${player.age} anni, Forza: ${player.strength}) da <strong>${cand.fromClub}</strong> per <strong>${cand.cost.toFixed(1)}M€</strong>`);
+    if (canAddRole(team, cand.role) && canTeamAcquirePlayer(team, cand) && team.budget >= cand.cost) {
+      const ev = evaluateTransferTarget(team, cand, cand.cost);
+      if (ev && __marketStatsSink) __marketStatsSink.push({ team: team.name, gain: ev.gain, cost: ev.cost, score: ev.score });
+      if (ev && ev.gain > 0) {
+        const player = materializeForeignCandidate(cand, team);
+        team.roster.push(player);
+        team.budget -= cand.cost;
+        recalculateTeamStrength(team);
+        transferLog.push(`❄️ <em>Mercato invernale</em>: <strong>${team.name}</strong> acquista ${player.firstName} ${player.lastName} (${player.age} anni, Forza: ${player.strength}) da <strong>${cand.fromClub}</strong> per <strong>${cand.cost.toFixed(1)}M€</strong>`);
+      }
     }
   });
 
@@ -3821,6 +3981,32 @@ function buildFilterBar(f, showScoutSeg) {
   </div>`;
 }
 
+// Variante semplificata di buildFilterBar per la tab Prestiti: stessi filtri
+// ruolo/età/forza (riusa matchesFilter/wireFilterBar), ma SENZA il segmento
+// "Tutti/Sul mercato/Svincolati" — quella distinzione non ha senso per i
+// candidati in prestito (sono tutti "disponibili in prestito", non c'è
+// un'analoga dicotomia mercato/svincolati).
+function buildLoanFilterBar(f) {
+  const opt = (val, label) => `<option value="${val}"${f.role === val ? ' selected' : ''}>${label}</option>`;
+  return `<div class="mm-filters" style="margin-bottom:10px;padding:8px 10px;background:#f5f5f5;border:1px solid #ddd;border-radius:6px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;font-size:.82rem">
+    <strong>🔎 Filtri:</strong>
+    <label>Ruolo
+      <select data-filter="role" style="margin-left:4px">
+        ${opt('', 'Tutti')}${opt('POR','POR')}${opt('DIF','DIF')}${opt('CEN','CEN')}${opt('ATT','ATT')}
+      </select>
+    </label>
+    <label>Età
+      <input type="number" data-filter="ageMin" value="${f.ageMin}" min="16" max="40" style="width:52px;margin-left:4px"> -
+      <input type="number" data-filter="ageMax" value="${f.ageMax}" min="16" max="40" style="width:52px">
+    </label>
+    <label>Forza
+      <input type="number" data-filter="strMin" value="${f.strMin}" min="0" max="100" style="width:52px;margin-left:4px"> -
+      <input type="number" data-filter="strMax" value="${f.strMax}" min="0" max="100" style="width:52px">
+    </label>
+    <button class="mm-btn" data-action="filter-reset" style="padding:2px 10px;font-size:.8rem">Reset</button>
+  </div>`;
+}
+
 function wireFilterBar(overlay, filter, render) {
   overlay.querySelectorAll('[data-filter]').forEach(el => {
     el.addEventListener('change', () => {
@@ -3853,9 +4039,43 @@ function showWinterMarketModal(onConfirm) {
   // calma la tab Rinnovi di fine stagione.
   const winterRenewalDecisions = new Map(); // player.id → 'renewed'
   const getWinterRenewals = () => playerTeam.roster.filter(p => p.contract?.duration === 1 && renewalInterest.has(p.id));
-  let activeTab = getWinterRenewals().length > 0 ? 'rinnovi' : 'acquisti';
+
+  // Offerte AI non richieste per i giocatori del DS umano — stesso meccanismo
+  // del mercato estivo (showManagerMarketModal), qui aggiunto ex-novo: prima
+  // il mercato invernale non generava mai offerte spontanee, solo l'estivo.
+  pendingAIOffers = [];
+  const winterExpiringIds = new Set(getWinterRenewals().map(p => p.id));
+  const winterAiTeams = [...serieA, ...serieB, ...serieC].filter(t => t !== playerTeam);
+  const offerDecisions = new Map(); // player.id → 'accepted' | 'refused'
+  playerTeam.roster
+    .filter(p => p.role !== 'POR' && p.strength > 45 && !winterExpiringIds.has(p.id))
+    .forEach(player => {
+      if (Math.random() > 0.30) return;
+      const bid = getTransferValue(player) * 1.3;
+      const interested = winterAiTeams
+        .filter(t => t.budget >= bid && canAddRole(t, player.role) && canTeamAcquirePlayer(t, player))
+        .map(t => ({ team: t, ev: evaluateTransferTarget(t, player, bid) }))
+        .filter(x => x.ev && x.ev.gain > 0)
+        .sort((a, b) => b.ev.gain - a.ev.gain);
+      if (!interested.length) return;
+      const best = interested[0];
+      const needPremium = Math.min(1, best.ev.gain / 10);
+      const offerPrice = Math.round(getTransferValue(player) * (1.3 + Math.random() * 0.3 + needPremium * 0.2) * 10) / 10;
+      pendingAIOffers.push({ player, buyerTeam: best.team, offerPrice });
+    });
+  // Se il giocatore lascia la rosa da un percorso diverso dalla tab Offerte
+  // (Vendi/Presta/Svincola dalla tab Rosa), invalida subito un'eventuale
+  // offerta pendente per lui — stessa guardia del mercato estivo.
+  const invalidatePendingOfferFor = (playerId) => {
+    if (pendingAIOffers.some(o => o.player.id === playerId) && !offerDecisions.has(playerId)) {
+      offerDecisions.set(playerId, 'refused');
+    }
+  };
+
+  let activeTab = getWinterRenewals().length > 0 ? 'rinnovi' : pendingAIOffers.length > 0 ? 'offerte' : 'acquisti';
   let loanCandidates = []; // ricostruito a ogni render della tab Prestiti: idx → { player, fromTeam }
   const filter = { role: '', ageMin: 16, ageMax: 40, strMin: 0, strMax: 100, availability: 'all' };
+  const loanFilter = { role: '', ageMin: 16, ageMax: 40, strMin: 0, strMax: 100 };
 
   // Azioni per-riga nella tab Rosa (Rinnova/Vendi/Presta/Svincola sempre
   // disponibili) — stesso meccanismo del mercato estivo, vedi lì per i commenti.
@@ -3874,6 +4094,25 @@ function showWinterMarketModal(onConfirm) {
       .map(p => ({ player: p, fromTeam: t }))
     )
     .sort((a, b) => b.player.strength - a.player.strength);
+
+  const buildOfferteTab = () => {
+    if (!pendingAIOffers.length) return '<p class="mm-empty">Nessuna offerta ricevuta.</p>';
+    return pendingAIOffers.map(({ player, buyerTeam, offerPrice }) => {
+      const d = offerDecisions.get(player.id);
+      if (d === 'accepted') return `<div class="mm-row mm-done">✅ <strong>${player.firstName} ${player.lastName}</strong> venduto a ${buyerTeam.name} — ${offerPrice.toFixed(1)}M€</div>`;
+      if (d === 'refused') {
+        const stillHere = playerTeam.roster.includes(player);
+        return `<div class="mm-row mm-done">❌ Offerta rifiutata — <strong>${player.firstName} ${player.lastName}</strong> ${stillHere ? 'rimane' : 'nel frattempo ha lasciato la rosa'}</div>`;
+      }
+      return `<div class="mm-row">
+        <div class="mm-pinfo">${formatNationality(player)}<span class="mm-name">${player.firstName} ${player.lastName}</span><span class="mm-badge role-${player.role}">${player.role}</span><span style="font-size:.78rem;color:#666">${formatSubRoles(player)}</span><span>${player.age}a</span><span>⚡${player.strength}</span><span class="mm-buyer-tag">🏟️ ${buyerTeam.name}</span></div>
+        <div class="mm-acts">
+          <strong class="mm-price">${offerPrice.toFixed(1)}M€</strong>
+          <button class="mm-btn mm-green" data-action="accept-offer" data-pid="${player.id}">Accetta</button>
+          <button class="mm-btn mm-red"   data-action="refuse-offer" data-pid="${player.id}">Rifiuta</button>
+        </div></div>`;
+    }).join('');
+  };
 
   const buildRinnoviTab = () => {
     const winterRenewals = getWinterRenewals();
@@ -4048,11 +4287,18 @@ function showWinterMarketModal(onConfirm) {
       html += `<p class="mm-empty">Hai raggiunto il massimo di ${MAX_INCOMING_LOANS} prestiti in ingresso.</p>`;
       return html;
     }
-    loanCandidates = generateIncomingLoanCandidates();
-    if (!loanCandidates.length) {
+    html += buildLoanFilterBar(loanFilter);
+    const allLoanCandidates = generateIncomingLoanCandidates();
+    if (!allLoanCandidates.length) {
       html += '<p class="mm-empty">Nessun giocatore disponibile in prestito al momento.</p>';
       return html;
     }
+    loanCandidates = allLoanCandidates.filter(({ player: p }) => matchesFilter(p, loanFilter));
+    if (!loanCandidates.length) {
+      html += '<p class="mm-empty">Nessun giocatore corrisponde ai filtri selezionati.</p>';
+      return html;
+    }
+    html += `<div class="mm-section-count" style="margin-bottom:6px">${loanCandidates.length} risultat${loanCandidates.length === 1 ? 'o' : 'i'}</div>`;
     html += loanCandidates.map(({ player: p, fromTeam }, i) => {
       const salary = p.contract?.salary ?? getDisplaySalary(p.strength);
       const overCap = !wageCapAllows(playerTeam, salary);
@@ -4065,6 +4311,7 @@ function showWinterMarketModal(onConfirm) {
 
   const render = (resetScroll) => {
     const tabContent = activeTab === 'rinnovi' ? buildRinnoviTab()
+      : activeTab === 'offerte' ? buildOfferteTab()
       : activeTab === 'acquisti' ? buildAcquistiTab()
       : activeTab === 'precontratti' ? buildPreContrattiTab()
       : activeTab === 'prestiti' ? buildPrestitiTab()
@@ -4078,6 +4325,7 @@ function showWinterMarketModal(onConfirm) {
     const rosterCount = getEffectiveRosterCount(playerTeam);
     const belowMinRoster = rosterCount < PLAYER_ROSTER_MIN_TO_PROCEED;
     const winterRenewPending = getWinterRenewals().filter(p => !winterRenewalDecisions.has(p.id)).length;
+    const winterOfferPending = pendingAIOffers.filter(o => !offerDecisions.has(o.player.id)).length;
     overlay.innerHTML = `
       <div class="mm-box">
         <div class="mm-header">
@@ -4087,6 +4335,7 @@ function showWinterMarketModal(onConfirm) {
         ${buildBudgetSliderHtml(playerTeam)}
         <div class="mm-tabs">
           <button class="mm-tab${activeTab==='rinnovi'?' active':''}" data-tab="rinnovi">Rinnovi${winterRenewPending > 0 ? ` <span class="mm-badge-count">${winterRenewPending}</span>` : ''}</button>
+          <button class="mm-tab${activeTab==='offerte'?' active':''}" data-tab="offerte">Offerte ricevute${winterOfferPending > 0 ? ` <span class="mm-badge-count">${winterOfferPending}</span>` : ''}</button>
           <button class="mm-tab${activeTab==='acquisti'?' active':''}" data-tab="acquisti">Acquisti</button>
           <button class="mm-tab${activeTab==='precontratti'?' active':''}" data-tab="precontratti">Pre-contratti${pendingPreContracts.length > 0 ? ` <span class="mm-badge-count" style="background:#15803d">${pendingPreContracts.length}</span>` : ''}</button>
           <button class="mm-tab${activeTab==='prestiti'?' active':''}" data-tab="prestiti">Prestiti <span class="mm-badge-count" style="background:#2f6fed">${getIncomingLoanCount(playerTeam)}/${MAX_INCOMING_LOANS}</span></button>
@@ -4105,7 +4354,7 @@ function showWinterMarketModal(onConfirm) {
       btn.addEventListener('click', () => { activeTab = btn.dataset.tab; render(true); })
     );
 
-    wireFilterBar(overlay, filter, render);
+    wireFilterBar(overlay, activeTab === 'prestiti' ? loanFilter : filter, render);
     wireBudgetSlider(overlay, playerTeam, render);
 
     overlay.querySelectorAll('[data-action]').forEach(btn => {
@@ -4128,6 +4377,21 @@ function showWinterMarketModal(onConfirm) {
               winterRenewalDecisions.set(id, 'renewed');
             }
           }
+        } else if (action === 'accept-offer') {
+          const offer = pendingAIOffers.find(o => o.player.id === id);
+          if (offer && !offerDecisions.has(id) && playerTeam.roster.includes(offer.player)) {
+            const { player: p, buyerTeam, offerPrice } = offer;
+            playerTeam.roster = playerTeam.roster.filter(x => x !== p);
+            buyerTeam.roster.push(p);
+            playerTeam.budget += offerPrice;
+            buyerTeam.budget -= offerPrice;
+            recalculateTeamStrength(buyerTeam);
+            recordTransfer(p, buyerTeam.name, offerPrice);
+            transferLog.push(`❄️ <strong>${playerTeam.name}</strong> vende ${p.firstName} ${p.lastName} a <strong>${buyerTeam.name}</strong> per <strong>${offerPrice.toFixed(1)}M€</strong>`);
+            offerDecisions.set(id, 'accepted');
+          }
+        } else if (action === 'refuse-offer') {
+          offerDecisions.set(id, 'refused');
         } else if (action === 'wm-buy-market') {
           const p0 = findPlayerById(id);
           const fromTeam0 = p0 ? [...serieA, ...serieB, ...serieC].find(t => t !== playerTeam && t.roster.includes(p0)) : null;
@@ -4184,7 +4448,7 @@ function showWinterMarketModal(onConfirm) {
               offers,
               renderSellOfferRow,
               (idx) => {
-                if (idx >= 0) { executeSellOffer(p, offers[idx]); rosaSellOffers.delete(id); }
+                if (idx >= 0) { executeSellOffer(p, offers[idx]); rosaSellOffers.delete(id); invalidatePendingOfferFor(id); }
                 render();
               }
             );
@@ -4199,7 +4463,7 @@ function showWinterMarketModal(onConfirm) {
               offers,
               (o, i) => `<div class="mm-row"><div class="mm-pinfo"><span class="mm-name">${o.team.name}</span><span style="font-size:.8rem;color:#666">(Serie ${o.team.leagueLevel})</span></div><div class="mm-acts"><button class="mm-btn mm-blue" data-offer-idx="${i}">Presta</button></div></div>`,
               (idx) => {
-                if (idx >= 0 && canLoanOutPlayer(playerTeam, p)) { executeLoanOutTo(p, offers[idx].team); rosaLoanOffers.delete(id); }
+                if (idx >= 0 && canLoanOutPlayer(playerTeam, p)) { executeLoanOutTo(p, offers[idx].team); rosaLoanOffers.delete(id); invalidatePendingOfferFor(id); }
                 render();
               }
             );
@@ -4210,7 +4474,7 @@ function showWinterMarketModal(onConfirm) {
           if (p && executeAnytimeRenew(p, years)) rosaRowPanel.delete(id);
         } else if (action === 'rosa-release') {
           const p = playerTeam.roster.find(x => x.id === id);
-          if (p && executeEarlyRelease(p)) rosaRowPanel.delete(id);
+          if (p && executeEarlyRelease(p)) { rosaRowPanel.delete(id); invalidatePendingOfferFor(id); }
         }
         render();
       });
@@ -5173,17 +5437,21 @@ function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newS
       if (avgStr >= maxAvgStr) return;
 
       if (team.budget < 2) return; // budget minimo per partecipare
-      if (Math.random() > 0.85) return; // 15% skip (era 35%)
+      const skipChance = Math.max(0.55, Math.min(0.97, 0.85 * getMarketAggressiveness(team)));
+      if (Math.random() > skipChance) return;
+      __recordMarketAttempt(team);
 
-      const teamWeakestStr = Math.min(...team.roster.filter(p => p.role !== 'POR').map(p => p.strength));
-
-      // Priorità 1: acquisto da un'altra squadra
+      // Priorità 1: acquisto da un'altra squadra — tra tutti i candidati già
+      // eleggibili (hard cap di lega/ruolo/nazionalità invariati), sceglie il
+      // migliore per guadagno marginale sull'11 titolare ÷ costo, non il più
+      // forte in assoluto.
       const marketOptions = transferMarket
-        .filter(item => item.fromTeam.name !== team.name && team.budget >= item.askingPrice && item.player.strength > teamWeakestStr && item.player.strength <= leagueStrCap(team.leagueLevel) && canAddRole(team, item.player.role) && canTeamAcquirePlayer(team, item.player))
-        .sort((a, b) => b.player.strength - a.player.strength);
+        .filter(item => item.fromTeam.name !== team.name && team.budget >= item.askingPrice && item.player.strength <= leagueStrCap(team.leagueLevel) && canAddRole(team, item.player.role) && canTeamAcquirePlayer(team, item.player))
+        .map(item => ({ player: item.player, cost: item.askingPrice, item }));
 
-      if (marketOptions.length > 0) {
-        const deal = marketOptions[0];
+      const bestMarket = pickBestTransferTarget(team, marketOptions, __marketStatsSink);
+      if (bestMarket) {
+        const deal = bestMarket.item;
         transferMarket.splice(transferMarket.indexOf(deal), 1);
         team.roster.push(deal.player);
         team.budget -= deal.askingPrice;
@@ -5197,13 +5465,13 @@ function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newS
       // Priorità 2: ingaggio svincolato (cap alzato/abbassato dalla forza del DS, ma mai sopra il cap di lega)
       const dsBonus = team.ds ? Math.round((team.ds.strength - 50) / 5) : 0;
       const faMaxStr = Math.min(leagueStrCap(team.leagueLevel), Math.max(5, (team.leagueLevel === 'A' ? 100 : team.leagueLevel === 'B' ? 72 : 45) + dsBonus));
-      const faIdx = freeAgents
-        .map((p, i) => ({ p, i }))
-        .filter(({ p }) => p.strength >= avgStr * 0.7 && p.strength <= faMaxStr && canAddRole(team, p.role) && canTeamAcquirePlayer(team, p))
-        .sort((a, b) => b.p.strength - a.p.strength)[0]?.i;
+      const faOptions = freeAgents
+        .map((p, i) => ({ player: p, cost: 0, i }))
+        .filter(({ player: p }) => p.strength >= avgStr * 0.7 && p.strength <= faMaxStr && canAddRole(team, p.role) && canTeamAcquirePlayer(team, p));
 
-      if (faIdx !== undefined) {
-        const fa = freeAgents.splice(faIdx, 1)[0];
+      const bestFa = pickBestTransferTarget(team, faOptions, __marketStatsSink);
+      if (bestFa) {
+        const fa = freeAgents.splice(bestFa.i, 1)[0];
         team.roster.push(fa);
         recalculateTeamStrength(team);
         recordTransfer(fa, team.name, 0);
@@ -5224,15 +5492,20 @@ function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newS
     if (playerTeam && team === playerTeam) return;
     if (team.leagueLevel !== 'A' || !canBuyForeignPlayer(team)) return;
     if (team.budget < 3) return;
-    if (Math.random() > 0.45) return; // 45% delle squadre idonee tenta un acquisto estero
-    const teamWeakestStr = Math.min(...team.roster.filter(p => p.role !== 'POR').map(p => p.strength));
+    const foreignSkipChance = Math.max(0.25, Math.min(0.75, 0.45 * getMarketAggressiveness(team)));
+    if (Math.random() > foreignSkipChance) return; // partecipazione modulata da ambizione/generosità presidente
+    __recordMarketAttempt(team);
     const cand = generateForeignCandidate();
-    if (cand.strength > teamWeakestStr && canAddRole(team, cand.role) && team.budget >= cand.cost) {
-      const player = materializeForeignCandidate(cand, team);
-      team.roster.push(player);
-      team.budget -= cand.cost;
-      recalculateTeamStrength(team);
-      transferLog.push(`💰 <strong>${team.name}</strong> acquista ${player.firstName} ${player.lastName} (${player.age} anni, Forza: ${player.strength}) da <strong>${cand.fromClub}</strong> per <strong>${cand.cost.toFixed(1)}M€</strong>`);
+    if (canAddRole(team, cand.role) && canTeamAcquirePlayer(team, cand) && team.budget >= cand.cost) {
+      const ev = evaluateTransferTarget(team, cand, cand.cost);
+      if (ev && __marketStatsSink) __marketStatsSink.push({ team: team.name, gain: ev.gain, cost: ev.cost, score: ev.score });
+      if (ev && ev.gain > 0) {
+        const player = materializeForeignCandidate(cand, team);
+        team.roster.push(player);
+        team.budget -= cand.cost;
+        recalculateTeamStrength(team);
+        transferLog.push(`💰 <strong>${team.name}</strong> acquista ${player.firstName} ${player.lastName} (${player.age} anni, Forza: ${player.strength}) da <strong>${cand.fromClub}</strong> per <strong>${cand.cost.toFixed(1)}M€</strong>`);
+      }
     }
   });
 
@@ -5503,7 +5776,7 @@ function generateIncomingLoanCandidates() {
       candidates.push({ player: p, fromTeam: team });
     });
   });
-  return candidates.sort((a, b) => b.player.strength - a.player.strength).slice(0, 30);
+  return candidates.sort((a, b) => b.player.strength - a.player.strength);
 }
 
 // Esegue fisicamente il prestito verso una destinazione già scelta (a monte,
@@ -5538,15 +5811,25 @@ function generateSellOffers(player) {
   // che non ha già raggiunto il tetto di 3 stranieri — altrimenti l'offerta
   // non sarebbe nemmeno valida da accettare (stesso vincolo dell'area scout).
   const isForeign = player.nationality !== 'IT';
+  // Interessate solo le squadre che il giocatore migliora DAVVERO (stessa
+  // valutazione usata dal mercato CPU-vs-CPU, evaluateTransferTarget): chi ne
+  // trarrebbe guadagno marginale zero non farebbe un'offerta reale.
   const interested = [...serieA, ...serieB, ...serieC]
     .filter(t => t !== playerTeam && canAddRole(t, player.role) && t.budget >= baseValue * 0.6 && fitsLeagueStrength(player.strength, t.leagueLevel)
-      && (!isForeign || canBuyForeignPlayer(t)));
+      && (!isForeign || canBuyForeignPlayer(t)))
+    .map(t => ({ team: t, ev: evaluateTransferTarget(t, player, baseValue) }))
+    .filter(x => x.ev && x.ev.gain > 0);
   shuffleArray(interested);
   const numOffers = Math.floor(Math.random() * 6); // 0-5
   const offers = [];
-  for (const t of interested) {
+  for (const { team: t, ev } of interested) {
     if (offers.length >= numOffers) break;
-    const price = Math.round(baseValue * (0.8 + Math.random() * 0.7) * 10) / 10;
+    // Premio di prezzo proporzionale al bisogno: chi guadagna di più
+    // dall'acquisto (tappa un vero buco) offre di più, chi prende solo un
+    // rincalzo marginale offre relativamente meno — range 0.8-1.5x invariato.
+    const needPremium = Math.min(1, ev.gain / 10);
+    const variation = 0.8 + Math.random() * 0.5 + needPremium * 0.2;
+    const price = Math.round(baseValue * variation * 10) / 10;
     if (t.budget < price) continue;
     offers.push({ buyerTeam: t, price });
   }
@@ -5565,10 +5848,17 @@ function generateSellOffers(player) {
 // (stessa logica di idoneità di findLoanDestination, ma restituisce più candidati).
 function generateLoanOutOffers(player) {
   const isForeign = player.nationality !== 'IT';
+  // Stessa logica di interesse reale di generateSellOffers: una squadra presta
+  // spazio in rosa solo a chi la migliora (o le tappa un buco di profondità),
+  // non a chiunque sia semplicemente idoneo per ruolo/lega. Costo trascurabile
+  // (0): un prestito non ha cartellino, conta solo il beneficio tattico.
   const candidates = [...serieA, ...serieB, ...serieC].filter(t =>
     t !== playerTeam && canAddRole(t, player.role) && fitsLeagueStrength(player.strength, t.leagueLevel)
     && (!isForeign || canBuyForeignPlayer(t))
-  );
+  ).filter(t => {
+    const ev = evaluateTransferTarget(t, player, 0);
+    return ev && ev.gain > 0;
+  });
   shuffleArray(candidates);
   const numOffers = Math.floor(Math.random() * 6); // 0-5
   return candidates.slice(0, numOffers).map(t => ({ team: t }));
@@ -5771,11 +6061,21 @@ function showManagerMarketModal(onConfirm) {
     .forEach(player => {
       if (Math.random() > 0.30) return;
       const bid = getTransferValue(player) * 1.3;
-      const interested = aiTeams.filter(t => t.budget >= bid && canAddRole(t, player.role) && canTeamAcquirePlayer(t, player));
+      // Solo squadre che ne trarrebbero un guadagno marginale reale fanno
+      // un'offerta (stessa logica di generateSellOffers/evaluateTransferTarget)
+      // — chi ha idoneità economica/di ruolo ma nessun bisogno tattico non è
+      // interessata davvero. L'acquirente è quella col guadagno maggiore, il
+      // prezzo ha un premio proporzionale al bisogno (range 1.3-1.8x invariato).
+      const interested = aiTeams
+        .filter(t => t.budget >= bid && canAddRole(t, player.role) && canTeamAcquirePlayer(t, player))
+        .map(t => ({ team: t, ev: evaluateTransferTarget(t, player, bid) }))
+        .filter(x => x.ev && x.ev.gain > 0)
+        .sort((a, b) => b.ev.gain - a.ev.gain);
       if (!interested.length) return;
-      const buyer = interested[Math.floor(Math.random() * interested.length)];
-      const offerPrice = Math.round(getTransferValue(player) * (1.3 + Math.random() * 0.5) * 10) / 10;
-      pendingAIOffers.push({ player, buyerTeam: buyer, offerPrice });
+      const best = interested[0];
+      const needPremium = Math.min(1, best.ev.gain / 10);
+      const offerPrice = Math.round(getTransferValue(player) * (1.3 + Math.random() * 0.3 + needPremium * 0.2) * 10) / 10;
+      pendingAIOffers.push({ player, buyerTeam: best.team, offerPrice });
     });
 
   // NB: l'eventuale interesse di un'altra squadra su un giocatore in scadenza
@@ -5802,6 +6102,7 @@ function showManagerMarketModal(onConfirm) {
     }
   };
   const filter = { role: '', ageMin: 16, ageMax: 40, strMin: 0, strMax: 100, availability: 'all' };
+  const loanFilter = { role: '', ageMin: 16, ageMax: 40, strMin: 0, strMax: 100 };
   let coachCandidates = []; // ricostruito a ogni render della tab Panchina: idx → coach da freeCoaches
   let coachBuyCandidates = []; // ricostruito a ogni render della tab Panchina: idx → { coach, fromTeam } acquistabili a pagamento
   let loanCandidates = []; // ricostruito a ogni render della tab Prestiti: idx → { player, fromTeam }
@@ -6178,11 +6479,18 @@ function showManagerMarketModal(onConfirm) {
       html += `<p class="mm-empty">Hai raggiunto il massimo di ${MAX_INCOMING_LOANS} prestiti in ingresso.</p>`;
       return html;
     }
-    loanCandidates = generateIncomingLoanCandidates();
-    if (!loanCandidates.length) {
+    html += buildLoanFilterBar(loanFilter);
+    const allLoanCandidates = generateIncomingLoanCandidates();
+    if (!allLoanCandidates.length) {
       html += '<p class="mm-empty">Nessun giocatore disponibile in prestito al momento.</p>';
       return html;
     }
+    loanCandidates = allLoanCandidates.filter(({ player: p }) => matchesFilter(p, loanFilter));
+    if (!loanCandidates.length) {
+      html += '<p class="mm-empty">Nessun giocatore corrisponde ai filtri selezionati.</p>';
+      return html;
+    }
+    html += `<div class="mm-section-count" style="margin-bottom:6px">${loanCandidates.length} risultat${loanCandidates.length === 1 ? 'o' : 'i'}</div>`;
     html += loanCandidates.map(({ player: p, fromTeam }, i) => {
       const salary = p.contract?.salary ?? getDisplaySalary(p.strength);
       const overCap = !wageCapAllows(playerTeam, salary);
@@ -6363,7 +6671,7 @@ function showManagerMarketModal(onConfirm) {
       btn.addEventListener('click', () => { activeTab = btn.dataset.tab; render(true); })
     );
 
-    wireFilterBar(overlay, filter, render);
+    wireFilterBar(overlay, activeTab === 'prestiti' ? loanFilter : filter, render);
     wireBudgetSlider(overlay, playerTeam, render);
     overlay.querySelectorAll('[data-coach-avail]').forEach(btn =>
       btn.addEventListener('click', () => { coachAvail = btn.dataset.coachAvail; render(); })
