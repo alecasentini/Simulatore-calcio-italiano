@@ -999,13 +999,6 @@ details[open] summary::after {
   min-width: 16px;
   text-align: center;
 }
-.md-oop-tag {
-  font-size: 0.7rem;
-  color: var(--color-warning);
-}
-.md-oor-tag {
-  color: #b91c1c;
-}
 .md-ovr {
   font-size: 0.72rem;
   color: var(--bg-default);
@@ -1035,6 +1028,7 @@ details[open] summary::after {
   letter-spacing: var(--tracking-label);
   color: #557;
   margin-bottom: 6px;
+  padding: 0 10px;
 }
 .md-event {
   font-size: 0.85rem;

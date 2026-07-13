@@ -872,7 +872,7 @@ function getBest11(roster, formationName) {
 
       chosen.forEach(p => {
         const type = assigned.get(p);
-        result.push({ player: p, inPosition: true, fit: p.subRoles.includes(type) ? 'position' : 'outOfPosition' });
+        result.push({ player: p, inPosition: true, fit: p.subRoles.includes(type) ? 'position' : 'outOfPosition', assignedSubRole: type });
         used.add(p.id);
       });
       needed -= chosen.length;
@@ -1762,19 +1762,21 @@ function showMatchDetailModal(match) {
 
   const roleLabel = { POR: 'P', DIF: 'D', CEN: 'C', ATT: 'A' };
 
-  const lineupRows = (lineup) => (lineup || []).map(({ player: p, fit }) => {
+  const lineupRows = (lineup) => (lineup || []).map(({ player: p, fit, assignedSubRole }) => {
     const rowClass = fit === 'outOfRole' ? ' md-oor' : fit === 'outOfPosition' ? ' md-oop' : '';
-    const tag = fit === 'outOfRole'
-      ? ' <span class="md-oop-tag md-oor-tag" title="Fuori ruolo: 70% forza">↔ fuori ruolo</span>'
-      : fit === 'outOfPosition'
-        ? ' <span class="md-oop-tag" title="Fuori posizione: 80% forza">⇄ fuori posizione</span>'
-        : '';
+    const fitTitle = fit === 'outOfRole' ? 'Fuori ruolo: 70% forza' : fit === 'outOfPosition' ? 'Fuori posizione: 80% forza' : '';
+    // Sottoruolo IN CUI è schierato in questa partita (assignedSubRole, dallo
+    // slot di formazione assegnato da getBest11), non l'elenco dei sottoruoli
+    // in cui il giocatore SA giocare in generale (formatSubRoles) — l'eventuale
+    // disadattamento resta segnalato solo dal colore/bordo arancione della riga
+    // (rowClass/ovrClass), senza più la scritta "fuori posizione/ruolo".
+    const positionLabel = p.role !== 'POR' && assignedSubRole ? SUB_ROLE_LABELS[assignedSubRole] || assignedSubRole : '';
     const effStr = Math.round(p.strength * FIT_STRENGTH_MULT[fit]);
     const ovrClass = fit === 'outOfRole' ? ' md-ovr-oor' : fit === 'outOfPosition' ? ' md-ovr-oop' : '';
     const ovrDisplay = fit === 'position' ? p.strength : effStr;
-    return `<div class="md-player-row${rowClass}">
+    return `<div class="md-player-row${rowClass}"${fitTitle ? ` title="${fitTitle}"` : ''}>
       <span class="md-role-badge role-${p.role}">${roleLabel[p.role] || p.role}</span>
-      <span>${p.firstName} ${p.lastName}${tag}${p.role !== 'POR' ? ` <span style="font-size:.7rem;color:#999">(${formatSubRoles(p)})</span>` : ''}</span>
+      <span>${p.firstName} ${p.lastName}${positionLabel ? ` <span style="font-size:.7rem;color:#999">(${positionLabel})</span>` : ''}</span>
       <span class="md-ovr${ovrClass}" title="${fit !== 'position' ? `Forza reale ${p.strength} × ${Math.round(FIT_STRENGTH_MULT[fit] * 100)}%` : ''}">${ovrDisplay}</span>
       <span class="md-forma">${formatForma(p)}</span>
       ${(p.injuryMatchesLeft || 0) > 0 ? '<span class="md-status-tag md-injured">🤕</span>' : ''}
@@ -3895,7 +3897,7 @@ function updateSeasonBtn() {
   if (seasonPhase === 0) {
     btn.textContent = 'Inizia Stagione';
   } else if (seasonPhase === 1) {
-    btn.textContent = currentMatchday >= getNumRounds() ? 'Fine Andata ▶' : `Giornata ${currentMatchday + 1} ▶`;
+    btn.textContent = currentMatchday >= getNumRounds() ? 'Vai al mercato invernale ▶' : `Giornata ${currentMatchday + 1} ▶`;
   } else if (seasonPhase === 2) {
     btn.textContent = 'Inizia Ritorno';
   } else if (seasonPhase === 3) {
@@ -3904,7 +3906,11 @@ function updateSeasonBtn() {
     btn.textContent = 'Vai alla Stagione Successiva';
   }
   if (ffBtn) {
-    ffBtn.style.display = (seasonPhase >= 1 && seasonPhase <= 3) ? '' : 'none';
+    // Nascosto anche ai confini di fine girone (currentMatchday >= numRounds
+    // in fase 1 o 3): lì non c'è più nulla da "simulare tutto", resta solo
+    // l'azione di transizione (mercato invernale / fine stagione).
+    const atRoundBoundary = (seasonPhase === 1 || seasonPhase === 3) && currentMatchday >= getNumRounds();
+    ffBtn.style.display = (seasonPhase >= 1 && seasonPhase <= 3 && !atRoundBoundary) ? '' : 'none';
   }
 }
 
@@ -4393,7 +4399,10 @@ function showWinterMarketModal(onConfirm) {
 
       return mainRow + panelRow;
     }).join('');
-    return `<table style="font-size:.85rem">
+    const formationNote = playerTeam.coach?.formation
+      ? `<div style="margin-bottom:8px;font-size:.85rem;color:#557">⚽ Modulo: <strong>${playerTeam.coach.formation}</strong></div>`
+      : '';
+    return `${formationNote}<table style="font-size:.85rem">
       <thead><tr><th class="col-naz">Naz.</th><th>Nome</th><th>Ruolo</th><th>Posizione</th><th>Età</th><th>Forza</th><th>Stipendio</th><th>Contratto</th><th>Azioni</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
@@ -4479,6 +4488,14 @@ function showWinterMarketModal(onConfirm) {
 
     wireFilterBar(overlay, activeTab === 'prestiti' ? loanFilter : filter, render);
     wireBudgetSlider(overlay, playerTeam, render);
+
+    overlay.querySelectorAll('tr[data-player-id]').forEach(tr => {
+      tr.addEventListener('click', (e) => {
+        if (e.target.closest('[data-action]')) return;
+        const p = findPlayerById(+tr.dataset.playerId);
+        if (p) openPlayerCard(p);
+      });
+    });
 
     overlay.querySelectorAll('[data-action]').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -4956,7 +4973,12 @@ document.getElementById('simulaTutto')?.addEventListener('click', function () {
     displayTopScorers('serieA', serieA);
     displayTopScorers('serieB', serieB);
     displayTopScorers('serieC', serieC);
-    finishAndata();
+    // Si ferma qui (non entra subito nel mercato invernale): l'utente vede
+    // la classifica finale del girone d'andata e decide lui quando proseguire
+    // col bottone "Vai al mercato invernale ▶" (stesso comportamento del
+    // flusso normale giornata-per-giornata, vedi updateSeasonBtn).
+    updateSeasonBtn();
+    saveGame();
     return;
   }
 
@@ -6359,8 +6381,11 @@ function showManagerMarketModal(onConfirm) {
       : effTotal >= PLAYER_ROSTER_MAX
         ? `<div style="margin-top:6px;color:#b45309;font-size:.8rem;font-weight:600">⚠️ Rosa al tetto massimo di ${PLAYER_ROSTER_MAX} giocatori (prestiti in uscita inclusi): nessun altro acquisto possibile finché non liberi posto</div>`
         : '';
+    const formationNote = playerTeam.coach?.formation
+      ? ` <span style="font-weight:400;color:#557">— Modulo: <strong>${playerTeam.coach.formation}</strong></span>`
+      : '';
     const summary = `<div style="margin-bottom:10px;padding:8px 10px;background:#eef7ff;border:1px solid #bcd;border-radius:6px;font-size:.85rem">
-      <div style="font-weight:700;margin-bottom:6px">📋 Rosa attuale (${nextTotal} giocatori)</div>
+      <div style="font-weight:700;margin-bottom:6px">📋 Rosa attuale (${nextTotal} giocatori)${formationNote}</div>
       ${['POR','DIF','CEN','ATT'].map(countsBadge).join('')}
       ${alertMissing}
     </div>`;
