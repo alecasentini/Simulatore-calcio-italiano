@@ -394,14 +394,14 @@ function randomImportDiscount() {
 function generateForeignCandidate() {
   const nationality = pickForeignNationality();
   const { firstName, lastName } = generatePlayerName(nationality);
-  const role = ['POR', 'DIF', 'CEN', 'ATT'][Math.floor(Math.random() * 4)];
+  const role = ROLES[Math.floor(Math.random() * ROLES.length)];
   const strength = 75 + Math.floor(Math.random() * 16); // 75-90
   const age = 19 + Math.floor(Math.random() * 14); // 19-32
-  const subRoles = assignSubRoles(role);
+  const roles = generatePlayerRoles(role);
   const discount = randomImportDiscount();
   const cost = Math.round(getTransferValue({ strength, age }) * (1 - discount) * 10) / 10;
   const salary = Math.max(1, Math.round(getDisplaySalary(strength) * (1 - discount)));
-  return { firstName, lastName, role, subRoles, strength, age, nationality, fromClub: randomForeignClub(nationality), discount, cost, salary };
+  return { firstName, lastName, role, roles, strength, age, nationality, fromClub: randomForeignClub(nationality), discount, cost, salary };
 }
 // 20 candidati per la sessione di mercato del giocatore umano.
 function generateForeignScoutTargets() {
@@ -415,46 +415,153 @@ function materializeForeignCandidate(cand, team) {
   contract.salary = cand.salary;
   return {
     id: nextPlayerId++, firstName: cand.firstName, lastName: cand.lastName, age: cand.age,
-    role: cand.role, subRoles: cand.subRoles, strength: cand.strength,
+    role: cand.role, roles: cand.roles, strength: cand.strength,
     maxStrength: Math.min(100, cand.strength + 5 + Math.floor(Math.random() * 10)),
     career: [{ team: team.name, joined: seasonCount, left: null, fee: cand.cost }],
     contract, personality: createPersonality(), forma: FORMA_MAX, nationality: cand.nationality,
   };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// SISTEMA A 9 RUOLI (Fase 2 — la generazione giocatori/rosa usa direttamente
+// i 9 ruoli sotto, non più le 4 vecchie macro-categorie POR/DIF/CEN/ATT).
+// ═══════════════════════════════════════════════════════════════════════════
+
+// I 9 ruoli veri: ciascuno (tranne POR) ha 2 posizioni tattiche. Il vecchio
+// sistema DIF/CEN/ATT+sottoruolo diventa qui 8 ruoli di movimento pieni.
+const ROLES = ['POR', 'DIF', 'TER', 'MED', 'CEN', 'EST', 'TRQ', 'ALA', 'ATT'];
+
+const ROLE_POSITIONS = {
+  POR: [],
+  DIF: ['CENTRALE', 'IMPOSTAZIONE'],
+  TER: ['BASSO', 'SPINTA'],
+  MED: ['INCONTRISTA', 'REGISTA_BASSO'],
+  CEN: ['CENTRALE', 'MEZZALA'],
+  EST: ['OFFENSIVO', 'DIFENSIVO'],
+  TRQ: ['REGISTA_AVANZATO', 'RIFINITORE'],
+  ALA: ['ESTERNA', 'ACCENTRATA'],
+  ATT: ['CENTRAVANTI', 'SECONDA_PUNTA'],
+};
+
+const ROLE_POSITION_LABELS = {
+  CENTRALE: 'Centrale', IMPOSTAZIONE: "D'impostazione",
+  BASSO: 'Basso', SPINTA: 'Spinta',
+  INCONTRISTA: 'Incontrista', REGISTA_BASSO: 'Regista basso',
+  MEZZALA: 'Mezzala',
+  OFFENSIVO: 'Offensivo', DIFENSIVO: 'Difensivo',
+  REGISTA_AVANZATO: 'Regista avanzato', RIFINITORE: 'Rifinitore',
+  ESTERNA: 'Esterna', ACCENTRATA: 'Accentrata',
+  CENTRAVANTI: 'Centravanti', SECONDA_PUNTA: 'Seconda punta',
+};
+
+// Zona (vecchio ruolo aggregato) di ciascun ruolo — usata SOLO per riusare i
+// colori/badge CSS .role-POR/.role-DIF/.role-CEN/.role-ATT già esistenti,
+// senza dover introdurre 9 colori nuovi.
+const ROLE_ZONE = {
+  POR: 'POR',
+  DIF: 'DIF', TER: 'DIF',
+  MED: 'CEN', CEN: 'CEN', EST: 'CEN', TRQ: 'CEN',
+  ALA: 'ATT', ATT: 'ATT',
+};
+
+// Le 10 coppie di doppio ruolo valide (adiacenza tattica) — un giocatore può
+// avere come ruolo secondario SOLO uno di questi, mai un ruolo a caso.
+const ROLE_PAIRS = new Set([
+  'DIF|TER', 'TER|EST', 'DIF|MED', 'MED|CEN', 'EST|CEN',
+  'EST|ALA', 'CEN|TRQ', 'ALA|TRQ', 'TRQ|ATT', 'ALA|ATT',
+]);
+function pairKey(r1, r2) { return [r1, r2].sort().join('|'); }
+function arePairedRoles(r1, r2) { return ROLE_PAIRS.has(pairKey(r1, r2)); }
+
+// Genera 1 o 2 posizioni per un ruolo (stessa probabilità 70/30 specialista/
+// versatile di assignSubRoles) — usata sia per il ruolo primario sia per
+// l'eventuale secondario.
+function generateRolePositions(role) {
+  const options = ROLE_POSITIONS[role];
+  if (!options || !options.length) return []; // POR: nessuna posizione
+  if (Math.random() < 0.30) return [...options]; // versatile: entrambe
+  return [options[Math.floor(Math.random() * options.length)]]; // specialista
+}
+
+// Genera l'intero player.roles (1-2 ruoli): ruolo primario obbligatorio +
+// SUB_ROLE_SECONDARY_CHANCE di probabilità di un ruolo secondario valido
+// (una delle ROLE_PAIRS che include il primario), scelto a caso tra quelli
+// disponibili per quel ruolo. Placeholder "per ora casuale", nessuna logica
+// di personalità/specializzazione ancora.
+const SECONDARY_ROLE_CHANCE = 0.20;
+function generatePlayerRoles(primaryRole) {
+  const roles = [{ role: primaryRole, positions: generateRolePositions(primaryRole) }];
+  if (primaryRole !== 'POR' && Math.random() < SECONDARY_ROLE_CHANCE) {
+    const candidates = ROLES.filter(r => r !== primaryRole && arePairedRoles(primaryRole, r));
+    if (candidates.length) {
+      const secondaryRole = candidates[Math.floor(Math.random() * candidates.length)];
+      roles.push({ role: secondaryRole, positions: generateRolePositions(secondaryRole) });
+    }
+  }
+  return roles;
+}
+
+// Backfill: garantisce che un giocatore creato senza passare da
+// generatePlayerRoles (es. dati sintetici di test) abbia comunque un
+// player.roles valido, derivato dal vecchio player.role se presente.
+function ensurePlayerRoles(player) {
+  if (!player.roles) player.roles = generatePlayerRoles(player.role || 'CEN');
+  return player.roles;
+}
+
+function getPrimaryRole(player) {
+  return ensurePlayerRoles(player)[0].role;
+}
+// Ritorna sempre l'array [{role, positions}], 1 o 2 elementi.
+function getPlayerRoles(player) {
+  return ensurePlayerRoles(player);
+}
+function playerCanPlayRole(player, role) {
+  return ensurePlayerRoles(player).some(r => r.role === role);
+}
+function playerPositionsFor(player, role) {
+  const entry = ensurePlayerRoles(player).find(r => r.role === role);
+  return entry ? entry.positions : [];
+}
+
+// Ordine di visualizzazione dei 9 ruoli (stesso ordine di ROLES: POR, poi
+// dietro-avanti per zona) — usato ovunque una rosa va ordinata per ruolo.
+const ROLE_ORDER = Object.fromEntries(ROLES.map((r, i) => [r, i]));
+
 // Rose realistiche: anche il club più piccolo tiene almeno ~22 giocatori (mai
 // scendere davvero a 18), quelle più ricche arrivano fino a una trentina —
 // range più stretto e più alto rispetto a prima, per rendere naturali gli
 // esuberi (vendite/prestiti verso squadre CPU) senza dover ricorrere a rose
-// artificialmente striminzite.
-const ROLE_MIN = { POR: 3, DIF: 7, CEN: 7, ATT: 5 };
-const ROLE_MAX = { POR: 4, DIF: 9, CEN: 10, ATT: 7 };
-const ROSTER_MIN_TOTAL = ROLE_MIN.POR + ROLE_MIN.DIF + ROLE_MIN.CEN + ROLE_MIN.ATT; // 22
-const ROSTER_MAX_TOTAL = ROLE_MAX.POR + ROLE_MAX.DIF + ROLE_MAX.CEN + ROLE_MAX.ATT; // 30
+// artificialmente striminzite. Distribuiti sui 9 ruoli invece delle 4
+// vecchie macro-categorie.
+const ROLE_MIN = { POR: 3, DIF: 3, TER: 3, MED: 2, CEN: 3, EST: 2, TRQ: 1, ALA: 2, ATT: 3 };
+const ROLE_MAX = { POR: 4, DIF: 4, TER: 4, MED: 3, CEN: 4, EST: 3, TRQ: 2, ALA: 3, ATT: 3 };
+const ROSTER_MIN_TOTAL = Object.values(ROLE_MIN).reduce((a, b) => a + b, 0); // 22
+const ROSTER_MAX_TOTAL = Object.values(ROLE_MAX).reduce((a, b) => a + b, 0); // 30
 
-// Sottoruoli: ogni ruolo di movimento (non il portiere) si specializza in due
-// varianti tattiche. La maggior parte dei giocatori è specialista in una sola
-// (~70%), i più versatili sanno coprire entrambe (~30%).
-const SUB_ROLES = { DIF: ['CENTRALE', 'TERZINO'], CEN: ['CENTRALE', 'ESTERNO'], ATT: ['CENTRALE', 'ALA'] };
-const SUB_ROLE_LABELS = { CENTRALE: 'Centrale', TERZINO: 'Terzino', ESTERNO: 'Esterno', ALA: 'Ala' };
-
-function assignSubRoles(role) {
-  const options = SUB_ROLES[role];
-  if (!options) return []; // POR: nessun sottoruolo
-  if (Math.random() < 0.30) return [...options]; // versatile: entrambe le varianti
-  return [options[Math.floor(Math.random() * options.length)]]; // specialista
+// Un giocatore con doppio ruolo NON si identifica in un unico ruolo: va
+// mostrato/cercato con entrambi ovunque nella UI (Database, Rosa). Un
+// badge colorato a ruolo per ciascuno (riusa i colori di zona già esistenti
+// .role-POR/DIF/CEN/ATT, estesi ai 9 ruoli in style.css).
+function formatRoleBadges(player) {
+  return getPlayerRoles(player).map(r => `<span class="role-chip role-${r.role}">${r.role}</span>`).join(' ');
 }
 
-// Backfill per giocatori legacy (salvataggi precedenti a questa funzionalità)
-function ensureSubRoles(player) {
-  if (!player.subRoles) player.subRoles = assignSubRoles(player.role);
-  return player.subRoles;
-}
-
-// Etichetta leggibile dei sottoruoli, es. "Centrale" o "Centrale/Terzino"
+// Etichetta leggibile delle posizioni di un giocatore, es. "Basso" o
+// "Basso/Spinta", più l'eventuale posizione del ruolo secondario (es.
+// "Basso + Offensivo") — ciascuna colorata secondo il ruolo di appartenenza,
+// così si distingue a colpo d'occhio quale posizione è del ruolo primario e
+// quale del secondario.
 function formatSubRoles(player) {
-  const subRoles = ensureSubRoles(player);
-  return subRoles.map(s => SUB_ROLE_LABELS[s] || s).join('/');
+  const roles = getPlayerRoles(player);
+  const posLabel = (entry) => entry.positions.map(p => ROLE_POSITION_LABELS[p] || p).join('/');
+  return roles
+    .map(entry => {
+      const label = posLabel(entry);
+      return label ? `<span class="role-chip-text role-${entry.role}">${label}</span>` : '';
+    })
+    .filter(Boolean)
+    .join(' + ');
 }
 
 // Nazionalità dei giocatori. La bandierina usa la vera immagine SVG della
@@ -484,6 +591,14 @@ function formatNationality(player) {
   const code = getNationality(player);
   const nat = NATIONALITIES[code] || NATIONALITIES.IT;
   return `<img class="nat-flag" src="assets/flags/${code}.svg" title="${nat.name}" alt="${nat.name}">`;
+}
+
+// Icone scudetto/Coppa Italia (assets/coppe/) al posto dell'emoji 🏆 generica
+// — usate ovunque si segnali un titolo vinto (note di carriera staff, testata
+// della Coppa Italia).
+const TROPHY_FILES = { scudetto: 'scudetto.webp', coppa: 'coppaitalia.webp' };
+function trophyIconHtml(type, label) {
+  return `<img class="trophy-icon" src="assets/coppe/${TROPHY_FILES[type]}" title="${label}" alt="${label}">`;
 }
 
 // Forza massima acquistabile per lega: A=nessun limite, B<=80, C<=60
@@ -519,21 +634,25 @@ function canPlayerSignMore(team) {
   return getEffectiveRosterCount(team) < PLAYER_ROSTER_MAX;
 }
 
-// POR 3-4, DIF 7-9, CEN 7-10, ATT 5-7 — totale sempre tra ROSTER_MIN_TOTAL (22) e ROSTER_MAX_TOTAL (30)
+// Distribuisce la rosa sui 9 ruoli (ROLE_MIN/ROLE_MAX) — totale sempre tra
+// ROSTER_MIN_TOTAL (22) e ROSTER_MAX_TOTAL (30).
 function randomRosterCounts() {
   const total = ROSTER_MIN_TOTAL + Math.floor(Math.random() * (ROSTER_MAX_TOTAL - ROSTER_MIN_TOTAL + 1));
   const extras = total - ROSTER_MIN_TOTAL;
-  const caps = { POR: ROLE_MAX.POR - ROLE_MIN.POR, DIF: ROLE_MAX.DIF - ROLE_MIN.DIF, CEN: ROLE_MAX.CEN - ROLE_MIN.CEN, ATT: ROLE_MAX.ATT - ROLE_MIN.ATT };
-  const added = { POR: 0, DIF: 0, CEN: 0, ATT: 0 };
+  const caps = {};
+  const added = {};
+  ROLES.forEach(r => { caps[r] = ROLE_MAX[r] - ROLE_MIN[r]; added[r] = 0; });
   let left = extras;
   while (left > 0) {
-    const avail = Object.keys(caps).filter(r => added[r] < caps[r]);
+    const avail = ROLES.filter(r => added[r] < caps[r]);
     if (!avail.length) break;
     const r = avail[Math.floor(Math.random() * avail.length)];
     added[r]++;
     left--;
   }
-  return { POR: ROLE_MIN.POR + added.POR, DIF: ROLE_MIN.DIF + added.DIF, CEN: ROLE_MIN.CEN + added.CEN, ATT: ROLE_MIN.ATT + added.ATT };
+  const counts = {};
+  ROLES.forEach(r => { counts[r] = ROLE_MIN[r] + added[r]; });
+  return counts;
 }
 
 function generatePlayerStrength(teamStrength) {
@@ -606,8 +725,8 @@ function generateTeamRoster(team) {
       const career = [{ team: team.name, joined: 0, left: null, fee: null }];
       const contract = createContract(strength, age);
       const personality = createPersonality();
-      const subRoles = assignSubRoles(role);
-      roster.push({ id: nextPlayerId++, firstName, lastName, age, role, subRoles, strength, maxStrength, career, contract, personality, forma: FORMA_MAX, nationality: 'IT' });
+      const roles = generatePlayerRoles(role);
+      roster.push({ id: nextPlayerId++, firstName, lastName, age, role, roles, strength, maxStrength, career, contract, personality, forma: FORMA_MAX, nationality: 'IT' });
     }
   });
   // Un solo straniero per squadra, solo in Serie A: sostituisce nome/nazionalità
@@ -661,48 +780,61 @@ function createYouthPlayer(role, team) {
   const career = [{ team: team.name, joined: seasonCount, left: null, fee: null }];
   const contract = createContract(youthStr, age);
   const personality = createPersonality();
-  const subRoles = assignSubRoles(role);
-  return { id: nextPlayerId++, firstName, lastName, age, role, subRoles, strength: youthStr, maxStrength, career, contract, personality, forma: FORMA_MAX, nationality: 'IT' };
+  const roles = generatePlayerRoles(role);
+  return { id: nextPlayerId++, firstName, lastName, age, role, roles, strength: youthStr, maxStrength, career, contract, personality, forma: FORMA_MAX, nationality: 'IT' };
 }
 
 // --- SISTEMA FORMAZIONI ---
 
+// 19 moduli a conteggio per ruolo (9 ruoli, vedi ROLES sopra) — non più le 4
+// macro-categorie POR/DIF/CEN/ATT. Ogni cella specifica SOLO quanti giocatori
+// di quel ruolo, mai la posizione esatta: quella resta sempre ottimizzata
+// liberamente da getBest11 in base a chi è disponibile (nessun equivalente
+// di FORMATION_SUBROLES — la vecchia tabella di sotto-posizioni per slot non
+// serve più, dato che ora il RUOLO stesso è già granulare).
 const FORMATIONS = {
-  '4-4-2': { POR: 1, DIF: 4, CEN: 4, ATT: 2 },
-  '4-3-3': { POR: 1, DIF: 4, CEN: 3, ATT: 3 },
-  '3-5-2': { POR: 1, DIF: 3, CEN: 5, ATT: 2 },
-  '4-2-4': { POR: 1, DIF: 4, CEN: 2, ATT: 4 },
-  '5-3-2': { POR: 1, DIF: 5, CEN: 3, ATT: 2 },
-  '4-5-1': { POR: 1, DIF: 4, CEN: 5, ATT: 1 },
-  '3-4-3': { POR: 1, DIF: 3, CEN: 4, ATT: 3 },
+  '4-4-2': { POR: 1, DIF: 2, TER: 2, CEN: 2, EST: 2, ATT: 2 },
+  '4-3-3': { POR: 1, DIF: 2, TER: 2, CEN: 3, ALA: 2, ATT: 1 },
+  '3-5-2': { POR: 1, DIF: 3, MED: 1, EST: 2, CEN: 2, ATT: 2 },
+  '4-2-4': { POR: 1, DIF: 2, TER: 2, MED: 2, ALA: 2, ATT: 2 },
+  '5-3-2': { POR: 1, DIF: 3, TER: 2, MED: 1, CEN: 2, ATT: 2 },
+  '4-5-1': { POR: 1, DIF: 2, TER: 2, MED: 1, CEN: 2, EST: 2, ATT: 1 },
+  '3-4-3': { POR: 1, DIF: 3, EST: 2, CEN: 2, ALA: 2, ATT: 1 },
+  '3-1-4-2': { POR: 1, DIF: 3, MED: 1, CEN: 2, EST: 2, ATT: 2 },
+  '3-4-1-2': { POR: 1, DIF: 3, EST: 2, CEN: 2, TRQ: 1, ATT: 2 },
+  '3-4-2-1': { POR: 1, DIF: 3, EST: 2, CEN: 2, TRQ: 2, ATT: 1 },
+  '4-1-2-1-2': { POR: 1, DIF: 2, TER: 2, MED: 1, CEN: 2, TRQ: 1, ATT: 2 },
+  '4-2-2-2': { POR: 1, DIF: 2, TER: 2, MED: 2, TRQ: 2, ATT: 2 },
+  '4-2-1-3': { POR: 1, DIF: 2, TER: 2, MED: 2, TRQ: 1, ALA: 2, ATT: 1 },
+  '4-1-2-3': { POR: 1, DIF: 2, TER: 2, MED: 1, CEN: 2, ALA: 2, ATT: 1 },
+  '4-3-2-1': { POR: 1, DIF: 2, TER: 2, CEN: 3, TRQ: 2, ATT: 1 },
+  '5-1-2-2': { POR: 1, DIF: 3, TER: 2, MED: 1, CEN: 2, ATT: 2 },
+  '5-2-2-1': { POR: 1, DIF: 3, TER: 2, MED: 2, TRQ: 2, ATT: 1 },
+  '5-4-1': { POR: 1, DIF: 3, TER: 2, CEN: 2, EST: 2, ATT: 1 },
+  '5-1-3-1': { POR: 1, DIF: 3, TER: 2, MED: 1, CEN: 3, ATT: 1 },
 };
 const FORMATION_NAMES = Object.keys(FORMATIONS);
 
-// Composizione dei sottoruoli richiesti per ciascuno slot di movimento del
-// modulo (il portiere resta fuori dall'equazione tattica). I conteggi per
-// ruolo coincidono sempre con FORMATIONS.
-const FORMATION_SUBROLES = {
-  '4-4-2': { DIF: ['CENTRALE', 'CENTRALE', 'TERZINO', 'TERZINO'], CEN: ['CENTRALE', 'CENTRALE', 'ESTERNO', 'ESTERNO'], ATT: ['CENTRALE', 'CENTRALE'] },
-  '4-3-3': { DIF: ['CENTRALE', 'CENTRALE', 'TERZINO', 'TERZINO'], CEN: ['CENTRALE', 'CENTRALE', 'CENTRALE'], ATT: ['CENTRALE', 'ALA', 'ALA'] },
-  '3-5-2': { DIF: ['CENTRALE', 'CENTRALE', 'CENTRALE'], CEN: ['CENTRALE', 'CENTRALE', 'CENTRALE', 'ESTERNO', 'ESTERNO'], ATT: ['CENTRALE', 'CENTRALE'] },
-  '4-2-4': { DIF: ['CENTRALE', 'CENTRALE', 'TERZINO', 'TERZINO'], CEN: ['CENTRALE', 'CENTRALE'], ATT: ['CENTRALE', 'CENTRALE', 'ALA', 'ALA'] },
-  '5-3-2': { DIF: ['CENTRALE', 'CENTRALE', 'CENTRALE', 'TERZINO', 'TERZINO'], CEN: ['CENTRALE', 'CENTRALE', 'CENTRALE'], ATT: ['CENTRALE', 'CENTRALE'] },
-  '4-5-1': { DIF: ['CENTRALE', 'CENTRALE', 'TERZINO', 'TERZINO'], CEN: ['CENTRALE', 'CENTRALE', 'CENTRALE', 'ESTERNO', 'ESTERNO'], ATT: ['CENTRALE'] },
-  '3-4-3': { DIF: ['CENTRALE', 'CENTRALE', 'CENTRALE'], CEN: ['CENTRALE', 'CENTRALE', 'ESTERNO', 'ESTERNO'], ATT: ['CENTRALE', 'ALA', 'ALA'] },
+// Nomi leggibili dei ruoli, in ordine di reparto (per la UI: descrizione
+// modulo, schermata allenatore). POR escluso (è sempre 1, mai indicato).
+const ROLE_LABELS = {
+  DIF: 'Difensore', TER: 'Terzino', MED: 'Mediano', CEN: 'Centrocampista',
+  EST: 'Esterno', TRQ: 'Trequartista', ALA: 'Ala', ATT: 'Attaccante',
 };
-
-// Descrizione leggibile delle posizioni richieste da un modulo, es.
-// "Difesa: 2 Centrali + 2 Terzini · Centrocampo: 2 Centrali + 2 Esterni · Attacco: 2 Centrali"
-const SUB_ROLE_LABELS_PLURAL = { CENTRALE: 'Centrali', TERZINO: 'Terzini', ESTERNO: 'Esterni', ALA: 'Ali' };
-const REPARTO_LABELS = { DIF: 'Difesa', CEN: 'Centrocampo', ATT: 'Attacco' };
+const ROLE_LABELS_PLURAL = {
+  DIF: 'Difensori', TER: 'Terzini', MED: 'Mediani', CEN: 'Centrocampisti',
+  EST: 'Esterni', TRQ: 'Trequartisti', ALA: 'Ali', ATT: 'Attaccanti',
+};
+// Descrizione leggibile di un modulo, es. "2 Difensori + 2 Terzini + 2
+// Centrocampisti + 2 Esterni + 2 Attaccanti" — sostituisce la vecchia
+// formatFormationRequirements (che elencava sotto-posizioni per reparto,
+// non più necessaria: il ruolo stesso è già granulare, la posizione esatta
+// resta libera).
 function formatFormationRequirements(formationName) {
-  const slots = FORMATION_SUBROLES[formationName] || FORMATION_SUBROLES['4-4-2'];
-  return ['DIF', 'CEN', 'ATT'].map(role => {
-    const counts = {};
-    slots[role].forEach(s => { counts[s] = (counts[s] || 0) + 1; });
-    const parts = Object.entries(counts).map(([s, n]) => `${n} ${n === 1 ? (SUB_ROLE_LABELS[s] || s) : (SUB_ROLE_LABELS_PLURAL[s] || s)}`);
-    return `${REPARTO_LABELS[role]}: ${parts.join(' + ')}`;
-  }).join(' · ');
+  const slots = FORMATIONS[formationName] || FORMATIONS['4-4-2'];
+  return ROLES.filter(r => r !== 'POR' && slots[r] > 0)
+    .map(r => `${slots[r]} ${slots[r] === 1 ? ROLE_LABELS[r] : ROLE_LABELS_PLURAL[r]}`)
+    .join(' + ');
 }
 
 // --- SISTEMA ALLENATORI ---
@@ -729,7 +861,13 @@ function createCoach(team) {
   const age = 38 + Math.floor(Math.random() * 20);
   const strength = generateStaffStrength(team, 11);
   const maxStrength = Math.min(100, strength + 10 + Math.floor(Math.random() * 35)); // +10 a +45
-  const coach = { firstName, lastName, age, strength, maxStrength, formation: FORMATION_NAMES[Math.floor(Math.random() * FORMATION_NAMES.length)], history: [] };
+  // 2 moduli preferiti (non più 1 fisso): quello effettivamente schierato si
+  // decide partita per partita/stagione in base alla rosa (pickActiveFormation).
+  const formations = [
+    FORMATION_NAMES[Math.floor(Math.random() * FORMATION_NAMES.length)],
+    FORMATION_NAMES[Math.floor(Math.random() * FORMATION_NAMES.length)],
+  ];
+  const coach = { firstName, lastName, age, strength, maxStrength, formations, history: [] };
   coach.contract = createCoachContract(coach, 2 + Math.floor(Math.random() * 3)); // 2-4 anni
   return coach;
 }
@@ -771,7 +909,11 @@ function retiredPlayerToStaff(player) {
   const ratio = player.strength >= 80 ? 0.70 : player.strength >= 60 ? 0.62 : 0.55;
   const strength = Math.max(30, Math.min(95, Math.round(player.strength * ratio + Math.random() * 15 - 5)));
   const maxStrength = Math.min(100, strength + 15 + Math.floor(Math.random() * 30)); // +15 a +45
-  return { firstName: player.firstName, lastName: player.lastName, age: player.age, strength, maxStrength, formation: FORMATION_NAMES[Math.floor(Math.random() * FORMATION_NAMES.length)] };
+  const formations = [
+    FORMATION_NAMES[Math.floor(Math.random() * FORMATION_NAMES.length)],
+    FORMATION_NAMES[Math.floor(Math.random() * FORMATION_NAMES.length)],
+  ];
+  return { firstName: player.firstName, lastName: player.lastName, age: player.age, strength, maxStrength, formations };
 }
 
 // Moltiplicatore di forza per quanto bene un giocatore si adatta allo slot
@@ -788,47 +930,69 @@ const FIT_STRENGTH_MULT = { position: 1, outOfPosition: 0.95, outOfRole: 0.90 };
 // forza). `inPosition` resta true per 'position'/'outOfPosition' (ruolo
 // corretto) e false solo per 'outOfRole' — mantenuto per compatibilità con
 // countCorrectSubRolePlacements/countOutOfPosition, che ragionano sul ruolo.
-function getBest11(roster, formationName) {
+// Generalizzata ai 9 ruoli (vedi ROLES): stessa struttura a 2 passate di
+// prima (assegnazione ottimale + scambio, poi riempimento fuori ruolo per
+// gli slot vuoti), ma il loop scorre i 9 ruoli invece delle 4 macro-
+// categorie, e il pool di un ruolo include anche chi lo possiede come
+// SECONDARIO (playerCanPlayRole) — un giocatore con doppio ruolo concorre
+// per entrambi, senza malus quando schierato nel secondario (FIT_STRENGTH_
+// MULT.position = 1 per entrambi, la distinzione primario/secondario non
+// pesa sulla forza in campo).
+// `opts.ignoreForma`: usa la forza GREZZA (p.strength) invece della forza
+// effettiva forma-pesata — per la "formazione tipo" mostrata nella schermata
+// Allenatore/promemoria a inizio stagione, che non è la formazione che
+// scenderà davvero in campo alla prossima giornata (quella resta sempre
+// forma-consapevole tramite filterAvailableRoster + forza effettiva, vedi
+// la simulazione partite) ma l'undici ideale del tecnico: infortunati,
+// squalificati e chi non è al meglio della condizione restano comunque
+// candidati validi, non vengono esclusi né penalizzati nel confronto.
+function getBest11(roster, formationName, opts) {
+  const strengthOf = opts && opts.ignoreForma ? (p => p.strength) : getPlayerEffectiveStrength;
   const slots = { ...(FORMATIONS[formationName] || FORMATIONS['4-4-2']) };
-  const subroleSlots = FORMATION_SUBROLES[formationName] || FORMATION_SUBROLES['4-4-2'];
   const result = [];
   const used = new Set();
 
   // Prima passata: per ogni ruolo, riempi gli slot con la combinazione di
-  // giocatori (e relativa assegnazione ai sottoruoli) che dà la somma di
+  // giocatori (e relativa assegnazione alle posizioni) che dà la somma di
   // forza più alta — non necessariamente "gli N più forti in assoluto". Il
-  // portiere non ha sottoruoli: si sceglie per pura forza, nessuna ambiguità.
-  for (const role of ['POR', 'DIF', 'CEN', 'ATT']) {
+  // portiere non ha posizioni: si sceglie per pura forza, nessuna ambiguità.
+  for (const role of ROLES) {
     let needed = slots[role] || 0;
     const inRolePool = roster
-      .filter(p => p.role === role && !used.has(p.id))
-      .sort((a, b) => getPlayerEffectiveStrength(b) - getPlayerEffectiveStrength(a));
+      .filter(p => playerCanPlayRole(p, role) && !used.has(p.id))
+      .sort((a, b) => strengthOf(b) - strengthOf(a));
 
-    const neededSubroles = subroleSlots[role];
-    if (!neededSubroles || !neededSubroles.length) {
+    const rolePositions = ROLE_POSITIONS[role];
+    if (!rolePositions || !rolePositions.length) {
       for (const p of inRolePool) {
         if (needed <= 0) break;
-        result.push({ player: p, inPosition: true, fit: 'position' });
+        result.push({ player: p, role, inPosition: true, fit: 'position' });
         used.add(p.id);
         needed--;
       }
     } else {
-      inRolePool.forEach(ensureSubRoles);
-      const totalNeeded = neededSubroles.length;
-      const [typeA, typeB] = SUB_ROLES[role];
-      const needA = neededSubroles.filter(s => s === typeA).length;
-      const needB = neededSubroles.filter(s => s === typeB).length;
+      const [typeA, typeB] = rolePositions;
+      // Con solo 2 posizioni per ruolo (invariato dal vecchio sistema), non
+      // c'è un conteggio "richiesto" per A/B come nel vecchio
+      // FORMATION_SUBROLES — il modulo specifica solo QUANTI giocatori di
+      // questo ruolo, la distribuzione tra le sue 2 posizioni è libera:
+      // si punta a metà/metà (arrotondato) per dare comunque un bersaglio
+      // di ottimizzazione allo scambio sotto, mai un vincolo rigido.
+      const totalNeeded = Math.min(needed, inRolePool.length);
+      const needA = Math.ceil(totalNeeded / 2);
+      const needB = totalNeeded - needA;
 
-      // Assegna un gruppo di giocatori già scelto ai sottoruoli: gli
+      const posOf = (p) => playerPositionsFor(p, role);
+      // Assegna un gruppo di giocatori già scelto alle posizioni: gli
       // specialisti esatti coprono per primi il proprio slot (per forza),
-      // i versatili riempiono quel che resta, e chi non trova comunque il
-      // proprio sottoruolo va negli slot avanzati (fuori posizione).
-      const assignSubroles = (players) => {
+      // i versatili riempiono quel che resta, e chi non trova comunque la
+      // propria posizione va nell'altra (fuori posizione).
+      const assignPositions = (players) => {
         let na = needA, nb = needB;
         const assigned = new Map();
-        const onlyA = players.filter(p => p.subRoles.includes(typeA) && !p.subRoles.includes(typeB));
-        const onlyB = players.filter(p => p.subRoles.includes(typeB) && !p.subRoles.includes(typeA));
-        const both = players.filter(p => p.subRoles.includes(typeA) && p.subRoles.includes(typeB));
+        const onlyA = players.filter(p => posOf(p).includes(typeA) && !posOf(p).includes(typeB));
+        const onlyB = players.filter(p => posOf(p).includes(typeB) && !posOf(p).includes(typeA));
+        const both = players.filter(p => posOf(p).includes(typeA) && posOf(p).includes(typeB));
         onlyA.forEach(p => { if (na > 0) { assigned.set(p, typeA); na--; } });
         onlyB.forEach(p => { if (nb > 0) { assigned.set(p, typeB); nb--; } });
         both.forEach(p => {
@@ -843,27 +1007,25 @@ function getBest11(roster, formationName) {
         return assigned;
       };
 
-      // Punto di partenza: i totalNeeded più forti (come prima), poi una
-      // passata di scambio corregge la selezione quando conviene di più
-      // panchinare un titolare "fuori posizione" a favore di uno specialista
-      // più debole ma perfettamente piazzato — che a volte rende di più alla
-      // somma totale (lo scarto fuori posizione è solo del 5%, quindi basta
-      // un divario di forza minimo fra i due per invertire la convenienza).
+      // Punto di partenza: i totalNeeded più forti, poi una passata di
+      // scambio corregge la selezione quando conviene di più panchinare un
+      // titolare "fuori posizione" a favore di uno specialista più debole
+      // ma perfettamente piazzato.
       let chosen = inRolePool.slice(0, totalNeeded);
-      let assigned = assignSubroles(chosen);
+      let assigned = assignPositions(chosen);
       let improved = true;
       while (improved) {
         improved = false;
         for (const p of chosen) {
           const type = assigned.get(p);
-          if (p.subRoles.includes(type)) continue; // già a suo agio, niente da migliorare
-          const misfitValue = getPlayerEffectiveStrength(p) * FIT_STRENGTH_MULT.outOfPosition;
+          if (posOf(p).includes(type)) continue; // già a suo agio, niente da migliorare
+          const misfitValue = strengthOf(p) * FIT_STRENGTH_MULT.outOfPosition;
           const bestOutside = inRolePool
-            .filter(q => !chosen.includes(q) && q.subRoles.includes(type))
-            .sort((a, b) => getPlayerEffectiveStrength(b) - getPlayerEffectiveStrength(a))[0];
-          if (bestOutside && getPlayerEffectiveStrength(bestOutside) > misfitValue) {
+            .filter(q => !chosen.includes(q) && posOf(q).includes(type))
+            .sort((a, b) => strengthOf(b) - strengthOf(a))[0];
+          if (bestOutside && strengthOf(bestOutside) > misfitValue) {
             chosen = chosen.filter(q => q !== p).concat(bestOutside);
-            assigned = assignSubroles(chosen);
+            assigned = assignPositions(chosen);
             improved = true;
             break; // ricalcola da capo dopo ogni scambio
           }
@@ -872,7 +1034,7 @@ function getBest11(roster, formationName) {
 
       chosen.forEach(p => {
         const type = assigned.get(p);
-        result.push({ player: p, inPosition: true, fit: p.subRoles.includes(type) ? 'position' : 'outOfPosition', assignedSubRole: type });
+        result.push({ player: p, role, inPosition: true, fit: posOf(p).includes(type) ? 'position' : 'outOfPosition', assignedSubRole: type });
         used.add(p.id);
       });
       needed -= chosen.length;
@@ -883,15 +1045,15 @@ function getBest11(roster, formationName) {
   // Seconda passata: slot vuoti → riempi con i migliori disponibili (fuori
   // ruolo) — qui lo sconto è uniforme per chiunque, quindi ordinare per
   // forza resta già ottimale, nessuno scambio necessario.
-  for (const role of ['POR', 'DIF', 'CEN', 'ATT']) {
+  for (const role of ROLES) {
     let needed = slots[role];
     if (!needed) continue;
     const pool = roster
       .filter(p => !used.has(p.id))
-      .sort((a, b) => getPlayerEffectiveStrength(b) - getPlayerEffectiveStrength(a));
+      .sort((a, b) => strengthOf(b) - strengthOf(a));
     for (const p of pool) {
       if (needed <= 0) break;
-      result.push({ player: p, inPosition: false, fit: 'outOfRole' });
+      result.push({ player: p, role, inPosition: false, fit: 'outOfRole' });
       used.add(p.id);
       needed--;
     }
@@ -900,12 +1062,41 @@ function getBest11(roster, formationName) {
   return result;
 }
 
+// L'allenatore ha 2 moduli preferiti (coach.formations, vedi createCoach):
+// quello EFFETTIVAMENTE schierato si decide qui confrontando getBest11 per
+// entrambi — vince il punteggio (somma forza effettiva pesata) più alto,
+// poi a parità la profondità panchina, poi a parità anche lì la formazione
+// 1 di default (mai un pareggio "instabile" che cambi a ogni chiamata).
+function pickActiveFormation(team) {
+  const formations = team.coach?.formations;
+  if (!formations || !formations.length) return '4-4-2';
+  if (formations.length === 1) return formations[0];
+  const [nameA, nameB] = formations;
+  const weighTeam = (entries) => entries.reduce((s, e) => s + getPlayerEffectiveStrength(e.player) * FIT_STRENGTH_MULT[e.fit], 0);
+
+  const best11A = getBest11(team.roster, nameA);
+  const best11B = getBest11(team.roster, nameB);
+  const scoreA = weighTeam(best11A);
+  const scoreB = weighTeam(best11B);
+  if (scoreA !== scoreB) return scoreA > scoreB ? nameA : nameB;
+
+  // Pareggio esatto sui titolari: decide chi ha la panchina più forte.
+  const usedA = new Set(best11A.map(e => e.player));
+  const usedB = new Set(best11B.map(e => e.player));
+  const reserveScore = (name, used) => weighTeam(getBest11(team.roster.filter(p => !used.has(p)), name));
+  const reserveScoreA = reserveScore(nameA, usedA);
+  const reserveScoreB = reserveScore(nameB, usedB);
+  if (reserveScoreA !== reserveScoreB) return reserveScoreA > reserveScoreB ? nameA : nameB;
+
+  return nameA; // pareggio totale anche sulle riserve: default alla formazione 1
+}
+
 // Classifica la rosa in titolari (migliori 11 per modulo) e prima riserva
 // (gli 11 migliori successivi, sempre per modulo) — usata sia per calcolare
 // l'esubero (getSquadSurplus) sia per dare priorità al rinnovo anticipato dei
 // giocatori più importanti (STEP 1d).
 function getSquadTiers(team) {
-  const formation = team.coach?.formation || '4-4-2';
+  const formation = pickActiveFormation(team);
   const starters = new Set(getBest11(team.roster, formation).map(e => e.player));
   const rest = team.roster.filter(p => !starters.has(p));
   const reserves = new Set(getBest11(rest, formation).map(e => e.player));
@@ -936,7 +1127,7 @@ function getSquadSurplus(team) {
 // Ritorna [{role, subRole, fit, severity, incumbent, isReserveGap}] ordinato
 // per severity decrescente. Pura, nessuna mutazione della rosa.
 function getTeamNeeds(team) {
-  const formation = team.coach?.formation || '4-4-2';
+  const formation = pickActiveFormation(team);
   const best11 = getBest11(team.roster, formation);
   const { reserves } = getSquadTiers(team);
   const reserveList = [...reserves];
@@ -945,8 +1136,11 @@ function getTeamNeeds(team) {
   best11.forEach(({ player, fit }) => {
     if (fit === 'position') return;
     const severity = fit === 'outOfRole' ? 10 : 5;
-    const subroleSlots = FORMATION_SUBROLES[formation]?.[player.role] || [];
-    const missingSubrole = subroleSlots.find(s => !(player.subRoles || []).includes(s)) || null;
+    // TODO Fase 2: getTeamNeeds ragiona ancora sul vecchio player.role singolo
+    // e FORMATION_SUBROLES (rimossa col sistema a 9 ruoli) — qui solo una
+    // guardia anti-crash, il "sottoruolo mancante" nel report torna sempre
+    // null finché il mercato CPU non viene generalizzato a player.roles.
+    const missingSubrole = null;
     needs.push({ role: player.role, subRole: missingSubrole, fit, severity, incumbent: player, isReserveGap: false });
   });
 
@@ -975,7 +1169,7 @@ function getTeamNeeds(team) {
 // Ritorna null se il giocatore non è nemmeno eleggibile per la rosa.
 function evaluateTransferTarget(team, player, cost) {
   if (!canAddRole(team, player.role) || !canTeamAcquirePlayer(team, player)) return null;
-  const formation = team.coach?.formation || '4-4-2';
+  const formation = pickActiveFormation(team);
   const weighTeam = (entries) => entries.reduce((s, e) => s + getPlayerEffectiveStrength(e.player) * FIT_STRENGTH_MULT[e.fit], 0);
 
   const before = weighTeam(getBest11(team.roster, formation));
@@ -1041,40 +1235,6 @@ function pickBestTransferTarget(team, candidates, statsSink) {
   return scored[0];
 }
 
-// Su quanti dei 10 slot di movimento (portiere escluso) il modulo scelto
-// piazza un giocatore nel sottoruolo corretto (oltre che nel ruolo giusto).
-// Assegnazione greedy ottimale: gli specialisti coprono per primi lo slot che
-// sanno fare, i versatili riempiono quel che resta — con solo due varianti
-// per ruolo questo greedy equivale alla soluzione ottima.
-function countCorrectSubRolePlacements(best11, formationName) {
-  const subroleSlots = FORMATION_SUBROLES[formationName] || FORMATION_SUBROLES['4-4-2'];
-  let correct = 0;
-  ['DIF', 'CEN', 'ATT'].forEach(role => {
-    const neededSlots = subroleSlots[role];
-    if (!neededSlots || !neededSlots.length) return;
-    const [typeA, typeB] = SUB_ROLES[role];
-    let needA = neededSlots.filter(s => s === typeA).length;
-    let needB = neededSlots.filter(s => s === typeB).length;
-
-    const rolePlayers = best11
-      .filter(e => e.inPosition && e.player.role === role)
-      .map(e => e.player);
-    rolePlayers.forEach(ensureSubRoles);
-    const onlyA = rolePlayers.filter(p => p.subRoles.includes(typeA) && !p.subRoles.includes(typeB)).length;
-    const onlyB = rolePlayers.filter(p => p.subRoles.includes(typeB) && !p.subRoles.includes(typeA)).length;
-    const both = rolePlayers.filter(p => p.subRoles.includes(typeA) && p.subRoles.includes(typeB)).length;
-
-    // Gli specialisti esatti coprono prima il proprio slot (non hanno alternative)
-    const fillOnlyA = Math.min(onlyA, needA); needA -= fillOnlyA; correct += fillOnlyA;
-    const fillOnlyB = Math.min(onlyB, needB); needB -= fillOnlyB; correct += fillOnlyB;
-    // I versatili riempiono gli slot rimasti, in un ordine o nell'altro
-    let bothLeft = both;
-    const fillBothA = Math.min(bothLeft, needA); bothLeft -= fillBothA; correct += fillBothA;
-    const fillBothB = Math.min(bothLeft, needB); correct += fillBothB;
-  });
-  return correct; // 0-10
-}
-
 // ─── FORMA (condizione fisica 0-100%) ─────────────────────────────────────────
 // Ogni giocatore parte a 100% a inizio stagione, cala di 1% per ogni partita
 // giocata e recupera 5% per ogni giornata di riposo. La forza effettiva in
@@ -1102,7 +1262,7 @@ function formatForma(p) {
 function getEffectiveStrength(team) {
   if (!team.roster || !team.roster.length) return team.strength || 50;
   const available = filterAvailableRoster(team.roster);
-  const formationName = team.coach?.formation || '4-4-2';
+  const formationName = pickActiveFormation(team);
   const best11 = getBest11(available.length >= 7 ? available : team.roster, formationName);
   if (!best11.length) return team.strength || 50;
   const total = best11.reduce((sum, { player, fit }) => {
@@ -1123,11 +1283,13 @@ function filterAvailableRoster(roster) {
   );
 }
 
-// Sceglie un assistman dal lineup escluso il marcatore (CEN > ATT > DIF > POR=0)
+// Sceglie un assistman dal lineup escluso il marcatore, con peso per ruolo:
+// i registi avanzati/rifinitori (TRQ) creano di più, poi centrocampisti/
+// esterni offensivi/ali, i difensori assistono poco, POR mai.
 // Ritorna null se non c'è un assist (40% delle volte)
 function pickAssister(lineup, scorer) {
   if (Math.random() < 0.40) return null;
-  const weights = { CEN: 8, ATT: 5, DIF: 2, POR: 0 };
+  const weights = { POR: 0, DIF: 1, TER: 2, MED: 3, CEN: 8, EST: 6, TRQ: 9, ALA: 6, ATT: 5 };
   const pool = lineup
     .map(e => e.player)
     .filter(p => p.id !== scorer.id && (weights[p.role] || 0) > 0);
@@ -1196,9 +1358,10 @@ function applyMatchdayForma(rounds) {
   }));
 }
 
-// Sceglie il marcatore con peso per ruolo: ATT > CEN > DIF > POR=0
+// Sceglie il marcatore con peso per ruolo: ATT/ALA in testa, poi TRQ, poi
+// EST/CEN/MED, i difensori (DIF/TER) segnano poco, POR mai.
 function pickScorer(roster) {
-  const weights = { ATT: 10, CEN: 4, DIF: 1.5, POR: 0 };
+  const weights = { POR: 0, DIF: 1, TER: 1.5, MED: 1, CEN: 3, EST: 3, TRQ: 5, ALA: 6, ATT: 10 };
   const pool = roster.filter(p => (weights[p.role] || 0) > 0);
   if (!pool.length) return null;
   const totalWeight = pool.reduce((s, p) => s + (weights[p.role] || 0), 0);
@@ -1238,12 +1401,12 @@ function getAgeValueMultiplier(age) {
 //   <50 → max 1M€ · <60 → max 2M€ · <70 → max 5M€ · <80 → max 15M€
 //   <90 → max 70M€ · ≤100 → max 180M€
 const VALUE_BRACKETS = [
-  { min: 0,  max: 50,  minCap: 0.1, maxCap: 1 },
-  { min: 50, max: 60,  minCap: 1,   maxCap: 2 },
-  { min: 60, max: 70,  minCap: 2,   maxCap: 5 },
-  { min: 70, max: 80,  minCap: 5,   maxCap: 15 },
-  { min: 80, max: 90,  minCap: 15,  maxCap: 70 },
-  { min: 90, max: 101, minCap: 70,  maxCap: 180 }, // include 100
+  { min: 0, max: 50, minCap: 0.1, maxCap: 1 },
+  { min: 50, max: 60, minCap: 1, maxCap: 2 },
+  { min: 60, max: 70, minCap: 2, maxCap: 5 },
+  { min: 70, max: 80, minCap: 5, maxCap: 15 },
+  { min: 80, max: 90, minCap: 15, maxCap: 70 },
+  { min: 90, max: 101, minCap: 70, maxCap: 180 }, // include 100
 ];
 
 function getValueBracket(strength) {
@@ -1294,11 +1457,11 @@ function recordTransfer(player, toTeamName, fee) {
 // scaglioni dei prezzi di trasferimento (VALUE_BRACKETS): i fuoriclasse
 // guadagnano cifre da vero top player, i giocatori deboli restano modesti.
 const SALARY_BRACKETS = [
-  { min: 0,  max: 50,  minCap: 20,   maxCap: 150 },
-  { min: 50, max: 60,  minCap: 150,  maxCap: 300 },
-  { min: 60, max: 70,  minCap: 300,  maxCap: 600 },
-  { min: 70, max: 80,  minCap: 600,  maxCap: 1200 },
-  { min: 80, max: 90,  minCap: 1200, maxCap: 5000 },
+  { min: 0, max: 50, minCap: 20, maxCap: 150 },
+  { min: 50, max: 60, minCap: 150, maxCap: 300 },
+  { min: 60, max: 70, minCap: 300, maxCap: 600 },
+  { min: 70, max: 80, minCap: 600, maxCap: 1200 },
+  { min: 80, max: 90, minCap: 1200, maxCap: 5000 },
   { min: 90, max: 100, minCap: 5000, maxCap: 12000 }, // niente modulazione età sullo stipendio: forza 100 → tetto pieno
 ];
 
@@ -1757,25 +1920,25 @@ function showMatchDetailModal(match) {
   const overlay = document.createElement('div');
   overlay.className = 'mm-overlay';
 
-  const fm1 = match.team1.coach?.formation || '?';
-  const fm2 = match.team2.coach?.formation || '?';
+  const fm1 = match.team1.coach ? pickActiveFormation(match.team1) : '?';
+  const fm2 = match.team2.coach ? pickActiveFormation(match.team2) : '?';
 
-  const roleLabel = { POR: 'P', DIF: 'D', CEN: 'C', ATT: 'A' };
-
-  const lineupRows = (lineup) => (lineup || []).map(({ player: p, fit, assignedSubRole }) => {
+  const lineupRows = (lineup) => (lineup || []).map(({ player: p, role: entryRole, fit, assignedSubRole }) => {
     const rowClass = fit === 'outOfRole' ? ' md-oor' : fit === 'outOfPosition' ? ' md-oop' : '';
     const fitTitle = fit === 'outOfRole' ? 'Fuori ruolo: 70% forza' : fit === 'outOfPosition' ? 'Fuori posizione: 80% forza' : '';
-    // Sottoruolo IN CUI è schierato in questa partita (assignedSubRole, dallo
-    // slot di formazione assegnato da getBest11), non l'elenco dei sottoruoli
-    // in cui il giocatore SA giocare in generale (formatSubRoles) — l'eventuale
-    // disadattamento resta segnalato solo dal colore/bordo arancione della riga
-    // (rowClass/ovrClass), senza più la scritta "fuori posizione/ruolo".
-    const positionLabel = p.role !== 'POR' && assignedSubRole ? SUB_ROLE_LABELS[assignedSubRole] || assignedSubRole : '';
+    // Posizione IN CUI è schierato in questa partita (assignedSubRole, dallo
+    // slot di formazione assegnato da getBest11 — usa entryRole, il ruolo
+    // EFFETTIVAMENTE giocato in questo slot, non p.role/primario, dato che un
+    // giocatore con doppio ruolo può essere schierato nel suo secondario).
+    // L'eventuale disadattamento resta segnalato solo dal colore/bordo
+    // arancione della riga (rowClass/ovrClass), senza scritta "fuori
+    // posizione/ruolo".
+    const positionLabel = entryRole !== 'POR' && assignedSubRole ? ROLE_POSITION_LABELS[assignedSubRole] || assignedSubRole : '';
     const effStr = Math.round(p.strength * FIT_STRENGTH_MULT[fit]);
     const ovrClass = fit === 'outOfRole' ? ' md-ovr-oor' : fit === 'outOfPosition' ? ' md-ovr-oop' : '';
     const ovrDisplay = fit === 'position' ? p.strength : effStr;
     return `<div class="md-player-row${rowClass}"${fitTitle ? ` title="${fitTitle}"` : ''}>
-      <span class="md-role-badge role-${p.role}">${roleLabel[p.role] || p.role}</span>
+      <span class="md-role-badge role-${entryRole}">${entryRole}</span>
       <span>${p.firstName} ${p.lastName}${positionLabel ? ` <span style="font-size:.7rem;color:#999">(${positionLabel})</span>` : ''}</span>
       <span class="md-ovr${ovrClass}" title="${fit !== 'position' ? `Forza reale ${p.strength} × ${Math.round(FIT_STRENGTH_MULT[fit] * 100)}%` : ''}">${ovrDisplay}</span>
       <span class="md-forma">${formatForma(p)}</span>
@@ -1980,8 +2143,8 @@ function generateMatchResult(team1, team2) {
   // Costruisce le lineup prima (necessario per assegnare le espulsioni)
   const avail1 = filterAvailableRoster(team1.roster || []);
   const avail2 = filterAvailableRoster(team2.roster || []);
-  const fm1 = team1.coach?.formation || '4-4-2';
-  const fm2 = team2.coach?.formation || '4-4-2';
+  const fm1 = pickActiveFormation(team1);
+  const fm2 = pickActiveFormation(team2);
   const lineup1 = getBest11(avail1.length >= 7 ? avail1 : (team1.roster || []), fm1);
   const lineup2 = getBest11(avail2.length >= 7 ? avail2 : (team2.roster || []), fm2);
   const players1 = lineup1.map(e => e.player);
@@ -2374,19 +2537,21 @@ function displayHistory() {
 
   // Mostriamo lo storico dall'ultimo al primo (reverse)
   championsHistory.slice().reverse().forEach(season => {
-    const createCell = (team) => {
-      let jerseyIconHtml = '';
-      if (team.colors && team.colors.length > 0) {
-        const backgroundStyle = `background: linear-gradient(90deg, ${team.colors[0]} 50%, ${team.colors[1] || team.colors[0]} 50%);`;
-        jerseyIconHtml = `<span class="jersey-icon" style="${backgroundStyle}"></span>`;
-      }
-      return `<div class="team-cell-content">${jerseyIconHtml}<span>${team.name} (${team.points} pt)</span></div>`;
-    };
+    const createCell = (team) => `<div class="team-cell-content">${teamLogoOrJerseyHtml(team, false, true)}<span>${team.name} (${team.points} pt)</span></div>`;
+    // season.coppaItalia è solo il nome del vincitore (stringa), non uno
+    // snapshot squadra come serieA/B/C: risali alla squadra vera per logo/colori.
+    const coppaCell = season.coppaItalia
+      ? (() => {
+          const coppaTeam = [...serieA, ...serieB, ...serieC].find(t => t.name === season.coppaItalia) || { name: season.coppaItalia, colors: [] };
+          return `<div class="team-cell-content">${teamLogoOrJerseyHtml(coppaTeam, false, true)}<span>${season.coppaItalia}</span></div>`;
+        })()
+      : '—';
 
-    html += `<tr><td>Stagione ${season.season}</td><td>${createCell(season.serieA)}</td><td>${createCell(season.serieB)}</td><td>${createCell(season.serieC)}</td><td>${season.coppaItalia || '—'}</td></tr>`;
+    html += `<tr><td>Stagione ${season.season}</td><td>${createCell(season.serieA)}</td><td>${createCell(season.serieB)}</td><td>${createCell(season.serieC)}</td><td>${coppaCell}</td></tr>`;
   });
   html += '</table>';
   container.innerHTML = html;
+  wireTeamLogoFallbacks(container);
 }
 
 function displayHallOfFame() {
@@ -2430,13 +2595,8 @@ function displayHallOfFame() {
     const sortedWinners = Object.values(winMap).sort((a, b) => b.count - a.count);
 
     let tableRows = sortedWinners.map((entry, index) => {
-      let jerseyIconHtml = '';
       const team = entry.team;
-      if (team.colors && team.colors.length > 0) {
-        const backgroundStyle = `background: linear-gradient(90deg, ${team.colors[0]} 50%, ${team.colors[1] || team.colors[0]} 50%);`;
-        jerseyIconHtml = `<span class="jersey-icon" style="${backgroundStyle}"></span>`;
-      }
-      const teamCellContent = `<div class="team-cell-content">${jerseyIconHtml}<span>${team.name}</span></div>`;
+      const teamCellContent = `<div class="team-cell-content">${teamLogoOrJerseyHtml(team, false, true)}<span>${team.name}</span></div>`;
 
       return `<tr><td>${index + 1}</td><td>${teamCellContent}</td><td>${entry.count}</td></tr>`;
     }).join('');
@@ -2462,6 +2622,7 @@ function displayHallOfFame() {
   const htmlCoppa = generateHoFTableHTML('Albo d\'oro Coppa Italia', winsCoppa);
 
   container.innerHTML = `<h2>Classifica Titoli Vinti</h2><div class="hof-grid">${htmlA}${htmlB}${htmlC}${htmlCoppa}</div>`;
+  wireTeamLogoFallbacks(container);
 }
 
 /**
@@ -2502,6 +2663,36 @@ function createTeamDetailsModal() {
  * Mostra il modal con le statistiche storiche della squadra selezionata.
  * @param {string} teamName - Il nome della squadra.
  */
+// Colonne ordinabili della tabella Rosa (click sull'intestazione) — "Nome"
+// ordina per COGNOME alfabetico, "Ruolo" (default) usa lo stesso ordine di
+// reparto già usato altrove (ROLE_ORDER sul ruolo primario).
+const ROSTER_SORT_KEYS = {
+  nome: p => `${p.lastName} ${p.firstName}`.toLowerCase(),
+  role: p => ROLE_ORDER[getPrimaryRole(p)],
+  age: p => p.age,
+  strength: p => p.strength,
+  salary: p => getPlayerSalaryDisplay(p.strength),
+  contract: p => p.contract?.duration || 0,
+};
+// Colonne ordinabili della tabella Statistiche. Per i portieri la colonna
+// "Gol" mostra i gol SUBITI col segno meno davanti (es. "-12") invece dei
+// gol segnati — l'ordinamento si basa sullo stesso valore mostrato.
+const ROSTER_STATS_SORT_KEYS = {
+  nome: p => `${p.lastName} ${p.firstName}`.toLowerCase(),
+  role: p => ROLE_ORDER[getPrimaryRole(p)],
+  presenze: p => p.seasonAppearances || 0,
+  gol: p => p.role === 'POR' ? -(p.seasonConceded || 0) : (p.seasonGoals || 0),
+  assist: p => p.seasonAssists || 0,
+};
+function sortPlayersBy(players, sortKeys, key, dir) {
+  const keyFn = sortKeys[key] || sortKeys.role;
+  const sorted = [...players].sort((a, b) => {
+    const va = keyFn(a), vb = keyFn(b);
+    return va < vb ? -1 : va > vb ? 1 : 0;
+  });
+  return dir === 'desc' ? sorted.reverse() : sorted;
+}
+
 function showTeamDetailsModal(teamName) {
   const allLeagues = [...serieA, ...serieB, ...serieC];
   const team = allLeagues.find(t => t.name === teamName);
@@ -2513,28 +2704,63 @@ function showTeamDetailsModal(teamName) {
   const titlesB = championsHistory.filter(s => s.serieB.name === teamName).length;
   const titlesC = championsHistory.filter(s => s.serieC.name === teamName).length;
 
-  // Genera la tabella rosa giocatori
-  const roleOrder = { POR: 0, DIF: 1, CEN: 2, ATT: 3 };
-  const sortedRoster = [...(team.roster || [])].sort((a, b) => roleOrder[a.role] - roleOrder[b.role]);
-  const rosterRows = sortedRoster.map(p => {
-    const salary = getPlayerSalaryDisplay(p.strength);
-    const durVal = p.contract?.duration;
-    const dur = !durVal || durVal <= 0 ? '⚠️ scad.' : `${durVal}a`;
-    return `<tr class="db-row-clickable" data-player-id="${p.id}"><td class="col-naz">${formatNationality(p)}</td><td><span class="player-name-link">${p.firstName} ${p.lastName}</span></td><td>${p.role}</td><td style="font-size:.82rem;color:#666">${formatSubRoles(p)}</td><td>${p.age}</td><td><strong>${p.strength}</strong></td><td>${formatForma(p)}</td><td>${formatMoneyK(salary)}€/anno</td><td>${dur}</td></tr>`;
-  }).join('');
-
-  // Piazzamento tattico corrente: quanti dei 10 di movimento sono nel sottoruolo giusto per il modulo
-  let tacticalFitHtml = '';
-  if (team.coach && team.roster && team.roster.length) {
-    const formationName = team.coach.formation || '4-4-2';
-    const best11 = getBest11(team.roster, formationName);
-    const correct = countCorrectSubRolePlacements(best11, formationName);
-    tacticalFitHtml = ` — Piazzamento tattico: <strong>${correct}/10</strong>`
-      + `<br><span style="font-size:.8rem;color:#666">Posizioni richieste dal ${formationName}: ${formatFormationRequirements(formationName)}</span>`;
-  }
+  let rosterView = 'rosa'; // 'rosa' | 'statistiche'
+  let rosterSortKey = 'role', rosterSortDir = 'asc';
+  let statsSortKey = 'role', statsSortDir = 'asc';
 
   const modalBody = document.getElementById('modal-body');
-  modalBody.innerHTML = `
+
+  const render = () => {
+    const roster = team.roster || [];
+    const sortArrow = (active, key, dir) => active === key ? (dir === 'desc' ? ' ▼' : ' ▲') : '';
+    const sortableTh = (label, key, activeKey, dir, dataAttr) =>
+      `<th data-${dataAttr}="${key}" style="cursor:pointer;user-select:none" title="Ordina per ${label.toLowerCase()}">${label}${sortArrow(activeKey, key, dir)}</th>`;
+
+    let tableSection;
+    if (rosterView === 'rosa') {
+      const sortedRoster = sortPlayersBy(roster, ROSTER_SORT_KEYS, rosterSortKey, rosterSortDir);
+      const rosterRows = sortedRoster.map(p => {
+        const salary = getPlayerSalaryDisplay(p.strength);
+        const durVal = p.contract?.duration;
+        const dur = !durVal || durVal <= 0 ? '⚠️ scad.' : `${durVal}a`;
+        return `<tr class="db-row-clickable" data-player-id="${p.id}"><td class="col-naz">${formatNationality(p)}</td><td><span class="player-name-link">${p.firstName} ${p.lastName}</span></td><td>${formatRoleBadges(p)}</td><td style="font-size:.82rem;color:#666">${formatSubRoles(p)}</td><td>${p.age}</td><td><strong>${p.strength}</strong></td><td>${formatForma(p)}</td><td>${formatMoneyK(salary)}€/anno</td><td>${dur}</td></tr>`;
+      }).join('');
+      tableSection = `<h4>Rosa (${sortedRoster.length} giocatori)</h4>
+      <table>
+        <thead><tr>
+          <th class="col-naz">Naz.</th>
+          ${sortableTh('Nome', 'nome', rosterSortKey, rosterSortDir, 'roster-sort')}
+          ${sortableTh('Ruolo', 'role', rosterSortKey, rosterSortDir, 'roster-sort')}
+          <th>Posizione</th>
+          ${sortableTh('Età', 'age', rosterSortKey, rosterSortDir, 'roster-sort')}
+          ${sortableTh('Forza', 'strength', rosterSortKey, rosterSortDir, 'roster-sort')}
+          <th>Forma</th>
+          ${sortableTh('Stipendio', 'salary', rosterSortKey, rosterSortDir, 'roster-sort')}
+          ${sortableTh('Contratto', 'contract', rosterSortKey, rosterSortDir, 'roster-sort')}
+        </tr></thead>
+        <tbody>${rosterRows}</tbody>
+      </table>`;
+    } else {
+      const sortedStats = sortPlayersBy(roster, ROSTER_STATS_SORT_KEYS, statsSortKey, statsSortDir);
+      const statsRows = sortedStats.map(p => {
+        const golDisplay = p.role === 'POR' ? `-${p.seasonConceded || 0}` : (p.seasonGoals || 0);
+        return `<tr class="db-row-clickable" data-player-id="${p.id}"><td class="col-naz">${formatNationality(p)}</td><td><span class="player-name-link">${p.firstName} ${p.lastName}</span></td><td>${formatRoleBadges(p)}</td><td>${p.seasonAppearances || 0}</td><td>${golDisplay}</td><td>${p.seasonAssists || 0}</td></tr>`;
+      }).join('');
+      tableSection = `<h4>Statistiche (${sortedStats.length} giocatori)</h4>
+      <table>
+        <thead><tr>
+          <th class="col-naz">Naz.</th>
+          ${sortableTh('Nome', 'nome', statsSortKey, statsSortDir, 'stats-sort')}
+          ${sortableTh('Ruolo', 'role', statsSortKey, statsSortDir, 'stats-sort')}
+          ${sortableTh('Presenze', 'presenze', statsSortKey, statsSortDir, 'stats-sort')}
+          ${sortableTh('Gol', 'gol', statsSortKey, statsSortDir, 'stats-sort')}
+          ${sortableTh('Assist', 'assist', statsSortKey, statsSortDir, 'stats-sort')}
+        </tr></thead>
+        <tbody>${statsRows}</tbody>
+      </table>`;
+    }
+
+    modalBody.innerHTML = `
       ${teamLogoOrJerseyHtml(team, true)}
       <h3>${team.name} - Palmarès e Storico</h3>
       <h4>Titoli Vinti</h4>
@@ -2551,38 +2777,350 @@ function showTeamDetailsModal(teamName) {
       </ul>
       <h4>Staff Tecnico</h4>
       <p><strong>Allenatore:</strong> ${team.coach
-      ? `<span class="player-name-link" id="staff-coach-link">${team.coach.firstName} ${team.coach.lastName}</span> — Età: ${team.coach.age} — Forza: <strong>${team.coach.strength}</strong> — Stipendio: <strong>${formatMoneyK(annualSalary(team.coach.contract?.salary ?? getDisplaySalary(team.coach.strength)))}€/anno</strong> — Modulo: <strong>${team.coach.formation || '?'}</strong>${team.objective ? ` — Obiettivo: ${team.objective.description}` : ''}${tacticalFitHtml}`
+      ? `<span class="player-name-link" id="staff-coach-link">${team.coach.firstName} ${team.coach.lastName}</span> — Età: ${team.coach.age} — Forza: <strong>${team.coach.strength}</strong> — Stipendio: <strong>${formatMoneyK(annualSalary(team.coach.contract?.salary ?? getDisplaySalary(team.coach.strength)))}€/anno</strong>
+        <br>Moduli preferiti: <strong>${(team.coach.formations || []).join(' / ') || '?'}</strong> (attivo: <strong>${pickActiveFormation(team)}</strong>) <span class="player-name-link" id="staff-formation-link">📋 Vedi formazione</span>
+        ${team.objective ? `<br>Obiettivo: ${team.objective.description}` : ''}`
       : `<em>Nessuno</em>`}</p>
       <p><strong>Direttore Sportivo:</strong> ${team.ds
       ? `<span class="player-name-link" id="staff-ds-link">${team.ds.firstName} ${team.ds.lastName}</span> — Età: ${team.ds.age} — Forza: <strong>${team.ds.strength}</strong>`
       : `<em>Nessuno</em>`}</p>
       <p><strong>Presidente:</strong> ${team.president
-      ? `${team.president.firstName} ${team.president.lastName} — ${getPresidentPersonalityLabel(team.president)}${Number.isFinite(team.wageBudgetCap) ? ` — Monte ingaggi: <strong>${formatMoneyK(annualSalary(getTeamWageBill(team)))}/${formatMoneyK(annualSalary(team.wageBudgetCap))}</strong>€/anno` : ''}`
+      ? `${team.president.firstName} ${team.president.lastName} — ${getPresidentPersonalityLabel(team.president)} — Budget: <strong>${team.budget.toFixed(1)}M€</strong>${Number.isFinite(team.wageBudgetCap) ? ` — Monte ingaggi: <strong>${formatMoneyK(annualSalary(getTeamWageBill(team)))}/${formatMoneyK(annualSalary(team.wageBudgetCap))}</strong>€/anno` : ''}`
       : `<em>Nessuno</em>`}</p>
-      <h4>Rosa (${sortedRoster.length} giocatori)</h4>
-      <table>
-        <thead><tr><th class="col-naz">Naz.</th><th>Nome</th><th>Ruolo</th><th>Posizione</th><th>Età</th><th>Forza</th><th>Forma</th><th>Stipendio</th><th>Contratto</th></tr></thead>
-        <tbody>${rosterRows}</tbody>
-      </table>`;
+      <div class="mm-seg-group" style="margin:4px 0 10px">
+        <button type="button" class="mm-seg${rosterView === 'rosa' ? ' active' : ''}" data-roster-view="rosa">Rosa</button>
+        <button type="button" class="mm-seg${rosterView === 'statistiche' ? ' active' : ''}" data-roster-view="statistiche">Statistiche</button>
+      </div>
+      ${tableSection}`;
 
-  document.getElementById('team-details-modal').style.display = 'flex';
+    wireTeamLogoFallbacks(modalBody);
 
-  wireTeamLogoFallbacks(modalBody);
-
-  // Rendi le righe della rosa clickable per aprire la scheda giocatore
-  modalBody.querySelectorAll('tr[data-player-id]').forEach(tr => {
-    tr.addEventListener('click', () => {
-      const p = findPlayerById(+tr.dataset.playerId);
-      if (p) openPlayerCard(p);
+    // Rendi le righe della rosa/statistiche clickable per aprire la scheda giocatore
+    modalBody.querySelectorAll('tr[data-player-id]').forEach(tr => {
+      tr.addEventListener('click', () => {
+        const p = findPlayerById(+tr.dataset.playerId);
+        if (p) openPlayerCard(p);
+      });
     });
+
+    // Nome di allenatore e DS clickabile: apre la scheda di carriera (piazzamenti,
+    // note, stagioni da svincolato)
+    const coachLink = document.getElementById('staff-coach-link');
+    if (coachLink) coachLink.addEventListener('click', () => openStaffCard(team.coach, 'Allenatore'));
+    const dsLink = document.getElementById('staff-ds-link');
+    if (dsLink) dsLink.addEventListener('click', () => openStaffCard(team.ds, 'Direttore Sportivo'));
+    const formationLink = document.getElementById('staff-formation-link');
+    if (formationLink) formationLink.addEventListener('click', () => showCoachDetailScreen(team));
+
+    modalBody.querySelectorAll('[data-roster-view]').forEach(btn => {
+      btn.addEventListener('click', () => { rosterView = btn.dataset.rosterView; render(); });
+    });
+    modalBody.querySelectorAll('th[data-roster-sort]').forEach(th => {
+      th.addEventListener('click', () => {
+        const key = th.dataset.rosterSort;
+        rosterSortDir = (rosterSortKey === key && rosterSortDir === 'asc') ? 'desc' : 'asc';
+        rosterSortKey = key;
+        render();
+      });
+    });
+    modalBody.querySelectorAll('th[data-stats-sort]').forEach(th => {
+      th.addEventListener('click', () => {
+        const key = th.dataset.statsSort;
+        statsSortDir = (statsSortKey === key && statsSortDir === 'asc') ? 'desc' : 'asc';
+        statsSortKey = key;
+        render();
+      });
+    });
+  };
+
+  render();
+  document.getElementById('team-details-modal').style.display = 'flex';
+}
+
+// ─── SCHERMATA ALLENATORE: campo pixel art con la formazione attiva ──────────
+// Altezza (top %) di ciascun ruolo sul campo, calibrata a mano dall'utente
+// sull'immagine formation.BMP (la linea di porta reale è a ~16%/~86%, non
+// 0%/100% — ci sono bande di spalti sopra/sotto il rettangolo di gioco).
+// TER/EST/ALA condividono l'altezza dei rispettivi ruoli centrali
+// corrispondenti (stesso reparto, solo più larghi) ma vengono spinti ai
+// bordi orizzontalmente (vedi WIDE_ROLES sotto). Il portiere è sempre
+// left:50%, quindi la sua riga (un solo giocatore) finisce lì di suo.
+const ROLE_PITCH_Y = { POR: 85, DIF: 74, TER: 74, MED: 60, CEN: 50, EST: 50, TRQ: 35, ALA: 25, ATT: 20 };
+const WIDE_ROLES = new Set(['TER', 'EST', 'ALA']);
+
+// Pallino pixel art disegnato a mano (griglia 8x8, approssimazione blocchi di
+// un cerchio) — fill="currentColor" sulla root svg (eredita a tutti i <rect>
+// figli) per poterlo tingere via CSS `color` invece di generare un asset per
+// zona. Senza questo attributo il fill di default SVG è nero fisso.
+const PITCH_DOT_SVG = `<svg viewBox="0 0 8 8" fill="currentColor" shape-rendering="crispEdges" xmlns="http://www.w3.org/2000/svg">
+  <rect x="2" y="0" width="4" height="1"/><rect x="1" y="1" width="6" height="1"/>
+  <rect x="0" y="2" width="8" height="4"/>
+  <rect x="1" y="6" width="6" height="1"/><rect x="2" y="7" width="4" height="1"/>
+</svg>`;
+
+// Colonne (left %) fisse per gli slot "centrali" di una riga, calibrate a
+// mano dall'utente: 1 solo (POR, MED, o un ATT/TRQ/CEN da solo) → 50% dritto
+// in mezzo; 2 (es. 2 CEN, 2 TRQ, 2 ATT, o i DIF centrali quando ci sono
+// anche i TER larghi) → 40%/60%; 3 (es. 3 CEN, o i DIF di una difesa a 3
+// senza TER) → 35%/50%/65%.
+const CENTRAL_X = { 1: [50], 2: [40, 60], 3: [35, 50, 65] };
+// I ruoli "larghi" (WIDE_ROLES: TER/EST/ALA) vanno sempre ai bordi, 20%/80%,
+// indipendentemente da quanti giocatori centrali condividono la stessa riga
+// (es. difesa a 4 = 2 TER a 20%/80% + 2 DIF centrali a 40%/60%; difesa a 5 =
+// 2 TER a 20%/80% + 3 DIF centrali a 35%/50%/65%).
+const WIDE_X = [20, 80];
+
+// Calcola posizione (x%, y%) sul campo per ogni titolare della formazione
+// attiva. Altezza = ROLE_PITCH_Y; colonna = CENTRAL_X per gli slot centrali,
+// WIDE_X per quelli larghi — nessuna precisione millimetrica, solo una
+// disposizione tatticamente leggibile a colpo d'occhio.
+function computePitchPositions(best11) {
+  const byY = new Map();
+  best11.forEach(entry => {
+    const y = ROLE_PITCH_Y[entry.role] ?? 50;
+    if (!byY.has(y)) byY.set(y, []);
+    byY.get(y).push(entry);
   });
 
-  // Nome di allenatore e DS clickabile: apre la scheda di carriera (piazzamenti,
-  // note, stagioni da svincolato)
-  const coachLink = document.getElementById('staff-coach-link');
-  if (coachLink) coachLink.addEventListener('click', () => openStaffCard(team.coach, 'Allenatore'));
-  const dsLink = document.getElementById('staff-ds-link');
-  if (dsLink) dsLink.addEventListener('click', () => openStaffCard(team.ds, 'Direttore Sportivo'));
+  const positioned = [];
+  byY.forEach((entries, y) => {
+    const wide = entries.filter(e => WIDE_ROLES.has(e.role));
+    const central = entries.filter(e => !WIDE_ROLES.has(e.role));
+
+    const centralXs = CENTRAL_X[central.length]
+      || central.map((_, i) => central.length === 1 ? 50 : 12 + i * (76 / (central.length - 1)));
+    central.forEach((entry, i) => positioned.push({ ...entry, x: centralXs[i], y }));
+
+    // I primi 2 larghi vanno sempre ai bordi fissi; eventuali larghi oltre
+    // il secondo (non dovrebbe capitare con le 19 formazioni definite) non
+    // devono comunque far sparire nessuno.
+    wide.slice(0, 2).forEach((entry, i) => positioned.push({ ...entry, x: WIDE_X[i], y }));
+    wide.slice(2).forEach(entry => positioned.push({ ...entry, x: 50, y }));
+  });
+  return positioned;
+}
+
+// Vista "Modulo": il campo pixel art con gli 11 pallini colorati per zona.
+function buildCoachScreenPitchHtml(positioned) {
+  const dotsHtml = positioned.map(({ player, role, assignedSubRole, fit, x, y }) => {
+    // Chi riempie lo slot "fuori ruolo" (nessun titolare vero per quel ruolo)
+    // non ha una posizione assegnata (assignedSubRole resta undefined,
+    // getBest11 non la calcola per la seconda passata) — mostriamo comunque
+    // la prima posizione del ruolo come etichetta di riferimento dello slot,
+    // invece di lasciarlo senza scritta.
+    const posCode = assignedSubRole || ROLE_POSITIONS[role]?.[0];
+    const posLabel = posCode ? (ROLE_POSITION_LABELS[posCode] || posCode) : '';
+    const fitClass = fit === 'outOfRole' ? ' pitch-dot-oor' : fit === 'outOfPosition' ? ' pitch-dot-oop' : '';
+    return `<div class="pitch-dot-wrap zone-${ROLE_ZONE[role] || 'CEN'}" style="left:${x}%;top:${y}%" title="${player.firstName} ${player.lastName}">
+      <div class="pitch-dot-role">${role}</div>
+      <div class="pitch-dot${fitClass}">${PITCH_DOT_SVG}</div>
+      ${posLabel ? `<div class="pitch-dot-pos">(${posLabel})</div>` : ''}
+    </div>`;
+  }).join('');
+  return `<div class="pitch-container">
+    <img class="pitch-bg" src="assets/pitch/formation.BMP" alt="">
+    ${dotsHtml}
+  </div>`;
+}
+
+// Vista "Migliori 11": lista testuale dei titolari con la forza EFFETTIVA
+// schierata (malus incluso per chi gioca fuori posizione/ruolo) — stesso
+// stile/logica delle righe titolari nel modal dettaglio partita
+// (showMatchDetailModal), qui riusata per coerenza visiva.
+function buildCoachScreenBest11ListHtml(best11, showForma = true) {
+  // getBest11 riempie prima ogni ruolo con chi lo sa giocare, e solo alla
+  // fine (seconda passata) tappa gli slot rimasti vuoti con chi capita —
+  // questi ultimi finiscono in coda all'array indipendentemente dal ruolo,
+  // spostando la riga in fondo alla lista. Riordiniamo sempre per ROLE_ORDER
+  // così l'elenco resta nel consueto ordine di reparto (POR→ATT).
+  const ordered = [...best11].sort((a, b) => ROLE_ORDER[a.role] - ROLE_ORDER[b.role]);
+  const rows = ordered.map(({ player: p, role: entryRole, fit, assignedSubRole }) => {
+    const rowClass = fit === 'outOfRole' ? ' md-oor' : fit === 'outOfPosition' ? ' md-oop' : '';
+    const fitTitle = fit === 'outOfRole' ? 'Fuori ruolo: 90% forza' : fit === 'outOfPosition' ? 'Fuori posizione: 95% forza' : '';
+    // Vedi buildCoachScreenPitchHtml: fallback alla prima posizione del
+    // ruolo quando lo slot è stato tappato "fuori ruolo" (nessuna posizione
+    // assegnata in quel caso).
+    const posCode = assignedSubRole || ROLE_POSITIONS[entryRole]?.[0];
+    const positionLabel = entryRole !== 'POR' && posCode ? (ROLE_POSITION_LABELS[posCode] || posCode) : '';
+    const effStr = Math.round(p.strength * FIT_STRENGTH_MULT[fit]);
+    const ovrClass = fit === 'outOfRole' ? ' md-ovr-oor' : fit === 'outOfPosition' ? ' md-ovr-oop' : '';
+    const ovrDisplay = fit === 'position' ? p.strength : effStr;
+    return `<div class="md-player-row${rowClass}"${fitTitle ? ` title="${fitTitle}"` : ''}>
+      <span class="md-role-badge role-${entryRole}">${entryRole}</span>
+      <span>${p.firstName} ${p.lastName}${positionLabel ? ` <span style="font-size:.7rem;color:#999">(${positionLabel})</span>` : ''}</span>
+      <span class="md-ovr${ovrClass}" title="${fit !== 'position' ? `Forza reale ${p.strength} × ${Math.round(FIT_STRENGTH_MULT[fit] * 100)}%` : ''}">${ovrDisplay}</span>
+      ${showForma ? `<span class="md-forma">${formatForma(p)}</span>` : ''}
+    </div>`;
+  }).join('');
+  return `<div class="coach-best11-list">${rows}</div>`;
+}
+
+function showCoachDetailScreen(team) {
+  const overlay = document.createElement('div');
+  overlay.className = 'mm-overlay';
+
+  const coach = team.coach;
+  const activeFormation = coach ? pickActiveFormation(team) : '4-4-2';
+  // 2 moduli preferiti (possono coincidere): l'utente può passare dall'uno
+  // all'altro per confrontarli, non solo vedere quello effettivamente
+  // schierato (activeFormation resta comunque marcato "in campo").
+  const preferredFormations = coach?.formations?.length ? [...new Set(coach.formations)] : [activeFormation];
+
+  const formationsNote = coach?.formations?.length
+    ? `Moduli preferiti: <strong>${coach.formations.join(' / ')}</strong> — in campo: <strong>${activeFormation}</strong>`
+    : 'Nessun allenatore in carica.';
+
+  let view = 'modulo'; // 'modulo' | 'best11'
+  let selectedFormation = activeFormation;
+
+  const render = () => {
+    const best11 = getBest11(team.roster || [], selectedFormation, { ignoreForma: true });
+    const positioned = computePitchPositions(best11);
+
+    const seg = (val, label) => `<button type="button" class="mm-seg${view === val ? ' active' : ''}" data-coach-view="${val}">${label}</button>`;
+    const formationBtn = (name) => `<button type="button" class="mm-seg${selectedFormation === name ? ' active' : ''}" data-coach-formation="${name}">${name}${name === activeFormation ? ' ⭐' : ''}</button>`;
+    const body = view === 'modulo' ? buildCoachScreenPitchHtml(positioned) : buildCoachScreenBest11ListHtml(best11);
+    overlay.innerHTML = `
+      <div class="mm-box coach-screen-box">
+        <div class="mm-header">
+          <span class="mm-title">📋 ${team.name} — ${coach ? `${coach.firstName} ${coach.lastName}` : 'Nessun allenatore'}</span>
+          <button class="modal-close" id="coach-screen-close" style="position:static">&times;</button>
+        </div>
+        <div class="coach-screen-body">
+          <p style="font-size:.85rem;color:#557;margin:0 2px 10px">${formationsNote}</p>
+          ${preferredFormations.length > 1 ? `<div class="mm-seg-group" style="margin-bottom:8px">${preferredFormations.map(formationBtn).join('')}</div>` : ''}
+          <div class="mm-seg-group" style="margin-bottom:10px">${seg('modulo', '📐 Modulo')}${seg('best11', '🧮 Migliori 11')}</div>
+          <div class="coach-screen-view">${body}</div>
+        </div>
+      </div>`;
+    overlay.querySelector('#coach-screen-close').addEventListener('click', () => overlay.remove());
+    overlay.querySelectorAll('[data-coach-view]').forEach(btn => {
+      btn.addEventListener('click', () => { view = btn.dataset.coachView; render(); });
+    });
+    overlay.querySelectorAll('[data-coach-formation]').forEach(btn => {
+      btn.addEventListener('click', () => { selectedFormation = btn.dataset.coachFormation; render(); });
+    });
+  };
+
+  render();
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+}
+
+// Posizioni generiche di un modulo (nessuna rosa reale coinvolta): un
+// pallino per ogni slot di FORMATIONS[formationName], col solo ruolo (nessun
+// nome giocatore/posizione specifica, dato che non c'è una rosa a cui
+// riferirsi) — usata per l'anteprima moduli di un allenatore ancora da
+// ingaggiare, dove non ha senso calcolare un "migliori 11" su una rosa che
+// non è la sua.
+function computeGenericFormationSlots(formationName) {
+  const slots = FORMATIONS[formationName] || FORMATIONS['4-4-2'];
+  const entries = [];
+  Object.entries(slots).forEach(([role, count]) => {
+    for (let i = 0; i < count; i++) entries.push({ role });
+  });
+  return computePitchPositions(entries);
+}
+
+function buildGenericFormationPitchHtml(formationName) {
+  const dotsHtml = computeGenericFormationSlots(formationName).map(({ role, x, y }) => {
+    return `<div class="pitch-dot-wrap zone-${ROLE_ZONE[role] || 'CEN'}" style="left:${x}%;top:${y}%">
+      <div class="pitch-dot-role">${role}</div>
+      <div class="pitch-dot">${PITCH_DOT_SVG}</div>
+    </div>`;
+  }).join('');
+  return `<div class="pitch-container">
+    <img class="pitch-bg" src="assets/pitch/formation.BMP" alt="">
+    ${dotsHtml}
+  </div>`;
+}
+
+// Anteprima dei moduli di un allenatore NON ancora ingaggiato (candidato dal
+// mercato/svincolati): mostra i suoi 2 moduli preferiti come schema generico
+// (nessun "migliori 11", perché non è ancora l'allenatore della nostra
+// squadra e non ha una rosa reale su cui essere valutato).
+function showCoachFormationsPreview(coach) {
+  const overlay = document.createElement('div');
+  overlay.className = 'mm-overlay';
+
+  const formations = coach.formations?.length ? [...new Set(coach.formations)] : ['4-4-2'];
+  let selected = formations[0];
+
+  const render = () => {
+    const formationBtn = (name) => `<button type="button" class="mm-seg${selected === name ? ' active' : ''}" data-preview-formation="${name}">${name}</button>`;
+    overlay.innerHTML = `
+      <div class="mm-box coach-screen-box">
+        <div class="mm-header">
+          <span class="mm-title">📋 ${coach.firstName} ${coach.lastName} — Moduli</span>
+          <button class="modal-close" id="coach-preview-close" style="position:static">&times;</button>
+        </div>
+        ${formations.length > 1 ? `<div class="mm-seg-group" style="margin:8px 2px 10px">${formations.map(formationBtn).join('')}</div>` : `<p style="font-size:.85rem;color:#557;margin:8px 2px 10px">Modulo preferito: <strong>${selected}</strong></p>`}
+        ${buildGenericFormationPitchHtml(selected)}
+      </div>`;
+    overlay.querySelector('#coach-preview-close').addEventListener('click', () => overlay.remove());
+    overlay.querySelectorAll('[data-preview-formation]').forEach(btn => {
+      btn.addEventListener('click', () => { selected = btn.dataset.previewFormation; render(); });
+    });
+  };
+
+  render();
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+}
+
+// Ad inizio stagione, se il giocatore ha un allenatore, gli ricorda quale
+// modulo sta effettivamente schierando (pickActiveFormation) — un promemoria
+// per il mercato imminente, non un'azione da compiere.
+// Mostra entrambi i moduli preferiti dell'allenatore (non solo quello
+// attivo) subito dopo la finestra del presidente, PRIMA di aprire il
+// mercato — così il DS decide gli acquisti sapendo già come gioca la
+// squadra. `onDone` viene chiamato alla chiusura (X o click fuori),
+// continuando la catena verso showManagerMarketModal.
+function showSeasonFormationNotice(team, onDone) {
+  if (!team || !team.coach || !team.roster?.length) { if (onDone) onDone(); return; }
+  const overlay = document.createElement('div');
+  overlay.className = 'mm-overlay';
+
+  const activeFormation = pickActiveFormation(team);
+  const preferredFormations = team.coach.formations?.length ? [...new Set(team.coach.formations)] : [activeFormation];
+  let selected = activeFormation;
+  let view = 'modulo'; // 'modulo' | 'best11'
+  let closed = false;
+  const close = () => { if (closed) return; closed = true; overlay.remove(); if (onDone) onDone(); };
+
+  const render = () => {
+    const best11 = getBest11(team.roster, selected, { ignoreForma: true });
+    const positioned = computePitchPositions(best11);
+    const formationBtn = (name) => `<button type="button" class="mm-seg${selected === name ? ' active' : ''}" data-notice-formation="${name}">${name}${name === activeFormation ? ' ⭐' : ''}</button>`;
+    const viewBtn = (val, label) => `<button type="button" class="mm-seg${view === val ? ' active' : ''}" data-notice-view="${val}">${label}</button>`;
+    const body = view === 'modulo' ? buildCoachScreenPitchHtml(positioned) : buildCoachScreenBest11ListHtml(best11);
+    overlay.innerHTML = `
+      <div class="mm-box coach-screen-box">
+        <div class="mm-header">
+          <span class="mm-title">📢 ${team.coach.firstName} ${team.coach.lastName}</span>
+          <button class="modal-close" id="season-formation-close" style="position:static">&times;</button>
+        </div>
+        <div class="coach-screen-body">
+          <p style="font-size:.9rem;margin:0 2px 10px">"Io gioco con questi moduli, tienine conto in fase di mercato."</p>
+          ${preferredFormations.length > 1 ? `<div class="mm-seg-group" style="margin-bottom:8px">${preferredFormations.map(formationBtn).join('')}</div>` : ''}
+          <div class="mm-seg-group" style="margin-bottom:10px">${viewBtn('modulo', '📐 Modulo')}${viewBtn('best11', '🧮 Migliori 11')}</div>
+          <div class="coach-screen-view">${body}</div>
+          <button class="mm-btn mm-confirm" id="season-formation-continue" style="width:100%;margin-top:10px">Continua al mercato →</button>
+        </div>
+      </div>`;
+    overlay.querySelector('#season-formation-close').addEventListener('click', close);
+    overlay.querySelector('#season-formation-continue').addEventListener('click', close);
+    overlay.querySelectorAll('[data-notice-formation]').forEach(btn => {
+      btn.addEventListener('click', () => { selected = btn.dataset.noticeFormation; render(); });
+    });
+    overlay.querySelectorAll('[data-notice-view]').forEach(btn => {
+      btn.addEventListener('click', () => { view = btn.dataset.noticeView; render(); });
+    });
+  };
+
+  render();
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+  document.body.appendChild(overlay);
 }
 
 // ─── DATABASE GLOBALE ─────────────────────────────────────────────────────────
@@ -2603,7 +3141,7 @@ function createDatabaseModal() {
       </div>
       <div class="db-filters">
         <select id="db-league"><option value="">Tutte le leghe</option><option value="A">Serie A</option><option value="B">Serie B</option><option value="C">Serie C</option><option value="free">Svincolati/Liberi</option></select>
-        <select id="db-role"><option value="">Tutti i ruoli</option><option value="POR">POR</option><option value="DIF">DIF</option><option value="CEN">CEN</option><option value="ATT">ATT</option></select>
+        <select id="db-role"><option value="">Tutti i ruoli</option>${ROLES.map(r => `<option value="${r}">${r}</option>`).join('')}</select>
         <select id="db-sort"><option value="strength-desc">Forza ↓</option><option value="strength-asc">Forza ↑</option><option value="age-asc">Età ↑</option><option value="age-desc">Età ↓</option><option value="name-asc">Nome A→Z</option></select>
         <input type="text" id="db-search" placeholder="🔍 Cerca nome...">
       </div>
@@ -2681,7 +3219,7 @@ function renderDatabaseTable(type) {
   }
 
   if (leagueFilter) rows = rows.filter(r => r.league === leagueFilter);
-  if (roleFilter && type === 'players') rows = rows.filter(r => r.role === roleFilter);
+  if (roleFilter && type === 'players') rows = rows.filter(r => playerCanPlayRole(r.player, roleFilter));
   if (search) rows = rows.filter(r => r.name.toLowerCase().includes(search));
 
   const [sortKey, sortDir] = sortBy.split('-');
@@ -2708,7 +3246,8 @@ function renderDatabaseTable(type) {
         : '—';
       const subRoleCell = r.player ? formatSubRoles(r.player) : '';
       const natCell = r.player ? formatNationality(r.player) : '';
-      return `<tr data-idx="${i}" class="db-row-clickable"><td class="col-naz">${natCell}</td><td><span class="player-name-link">${r.name}</span></td><td>${r.role}</td><td style="font-size:.82rem;color:#666">${subRoleCell}</td><td>${r.age}</td><td><strong>${r.strength}</strong></td><td class="db-contract">${contractCell}</td><td>${r.team}</td><td>${leagueLabel(r.league)}</td></tr>`;
+      const roleCell = r.player ? formatRoleBadges(r.player) : (r.role || '');
+      return `<tr data-idx="${i}" class="db-row-clickable"><td class="col-naz">${natCell}</td><td><span class="player-name-link">${r.name}</span></td><td>${roleCell}</td><td style="font-size:.82rem;color:#666">${subRoleCell}</td><td>${r.age}</td><td><strong>${r.strength}</strong></td><td class="db-contract">${contractCell}</td><td>${r.team}</td><td>${leagueLabel(r.league)}</td></tr>`;
     }).join('');
   } else {
     thead = '<tr><th>Nome</th><th>Età</th><th>Forza</th><th>Squadra</th><th>Lega</th></tr>';
@@ -2787,11 +3326,17 @@ function openPlayerCard(player) {
   const pastStatsRows = statsHistory.map(h =>
     statRow(`St. ${h.season}`, h.team, h.league, h.appearances, h.goals, isGoalkeeper ? (h.conceded ?? 0) : h.assists)
   ).join('');
-  const currentStatsRow = statRow(
+  // La riga "stagione in corso" ha senso solo mentre la stagione è
+  // effettivamente in corso (fasi 1-3): tra fine stagione (finishSeason,
+  // fase 4) e il prossimo click su "Inizia Stagione" (fase 0), i contatori
+  // live (seasonGoals ecc.) NON sono ancora stati azzerati — restano quelli
+  // della stagione appena archiviata in statsHistory, e mostrarli qui
+  // duplicherebbe l'ultima riga con l'etichetta della stagione successiva.
+  const currentStatsRow = (seasonPhase === 1 || seasonPhase === 2 || seasonPhase === 3) ? statRow(
     `St. ${seasonCount + 1} (in corso)`, currentTeamName, teamMap[currentTeamName],
     player.seasonAppearances || 0, player.seasonGoals || 0,
     isGoalkeeper ? (player.seasonConceded || 0) : (player.seasonAssists || 0)
-  );
+  ) : '';
   const statsRows = pastStatsRows + currentStatsRow;
 
   // Sezione contratto
@@ -2828,7 +3373,7 @@ function openPlayerCard(player) {
         <div class="player-card-header">
           ${formatNationality(player)}
           <span class="player-card-name">${player.firstName} ${player.lastName}</span>
-          <span class="player-card-role role-${player.role}">${player.role}</span>
+          ${formatRoleBadges(player)}
           ${formatSubRoles(player) ? `<span style="font-size:.8rem;color:#666">${formatSubRoles(player)}</span>` : ''}
         </div>
         <div class="player-card-stats">
@@ -3206,10 +3751,12 @@ function hirePlayerAsDS(team, years) {
 function startCareerMarketSession() {
   if (!playerTeam) { saveGame(); return; }
   showPresidentBriefingModal(playerTeam, () => {
-    showManagerMarketModal(() => {
-      recalculateTeamStrength(playerTeam);
-      displayTransferLog();
-      saveGame();
+    showSeasonFormationNotice(playerTeam, () => {
+      showManagerMarketModal(() => {
+        recalculateTeamStrength(playerTeam);
+        displayTransferLog();
+        saveGame();
+      });
     });
   });
 }
@@ -3585,8 +4132,8 @@ function showSeasonEvaluationModal(d, onDone) {
   }
 
   const note = [
-    d.wonTitle ? '🏆 Scudetto' : '',
-    d.wonCup ? '🏆 Coppa Italia' : '',
+    d.wonTitle ? `${trophyIconHtml('scudetto', 'Scudetto')} Scudetto` : '',
+    d.wonCup ? `${trophyIconHtml('coppa', 'Coppa Italia')} Coppa Italia` : '',
     d.promoted ? '🎉 Promozione' : '',
     d.relegated ? '📉 Retrocessione' : '',
     fired ? '🚨 Esonerato' : '',
@@ -3700,8 +4247,8 @@ function showDSCareerModal() {
       </div>
       <div class="mm-content">
         ${dsCareer.history.length
-          ? `<table style="font-size:.85rem"><thead><tr><th>Stagione</th><th>Squadra</th><th>Lega</th><th>Obiettivo</th><th>Risultato</th><th>Note</th></tr></thead><tbody>${rows}</tbody></table>`
-          : '<p class="mm-empty">Carriera appena iniziata — nessuna stagione completata.</p>'}
+      ? `<table style="font-size:.85rem"><thead><tr><th>Stagione</th><th>Squadra</th><th>Lega</th><th>Obiettivo</th><th>Risultato</th><th>Note</th></tr></thead><tbody>${rows}</tbody></table>`
+      : '<p class="mm-empty">Carriera appena iniziata — nessuna stagione completata.</p>'}
       </div>
       <div class="mm-footer">
         <span class="mm-footer-note">${playerTeam ? `Attualmente DS di ${playerTeam.name} (contratto: ${Math.max(0, dsCareer.contractYears)} anni)` : 'Attualmente senza squadra'}</span>
@@ -4054,7 +4601,7 @@ function runWinterAITransfers() {
 // ── MODAL MERCATO INVERNALE (solo per playerTeam) ─────────────────────────────
 // ── Filtri di ricerca giocatori nei modali mercato ──────────────────────────
 function matchesFilter(p, f) {
-  if (f.role && p.role !== f.role) return false;
+  if (f.role && !playerCanPlayRole(p, f.role)) return false;
   if (p.age < f.ageMin || p.age > f.ageMax) return false;
   if (p.strength < f.strMin || p.strength > f.strMax) return false;
   return true;
@@ -4094,7 +4641,7 @@ function buildFilterBar(f, showScoutSeg) {
     <strong>🔎 Filtri:</strong>
     <label>Ruolo
       <select data-filter="role" style="margin-left:4px">
-        ${opt('', 'Tutti')}${opt('POR','POR')}${opt('DIF','DIF')}${opt('CEN','CEN')}${opt('ATT','ATT')}
+        ${opt('', 'Tutti')}${ROLES.map(r => opt(r, r)).join('')}
       </select>
     </label>
     <label>Età
@@ -4121,7 +4668,7 @@ function buildLoanFilterBar(f) {
     <strong>🔎 Filtri:</strong>
     <label>Ruolo
       <select data-filter="role" style="margin-left:4px">
-        ${opt('', 'Tutti')}${opt('POR','POR')}${opt('DIF','DIF')}${opt('CEN','CEN')}${opt('ATT','ATT')}
+        ${opt('', 'Tutti')}${ROLES.map(r => opt(r, r)).join('')}
       </select>
     </label>
     <label>Età
@@ -4203,6 +4750,8 @@ function showWinterMarketModal(onConfirm) {
 
   let activeTab = getWinterRenewals().length > 0 ? 'rinnovi' : pendingAIOffers.length > 0 ? 'offerte' : 'acquisti';
   let loanCandidates = []; // ricostruito a ogni render della tab Prestiti: idx → { player, fromTeam }
+  let moduliView = 'modulo'; // vista tab Moduli: 'modulo' | 'best11'
+  let moduliFormation = null; // modulo selezionato nella tab Moduli (lazy: parte dall'attivo)
   const filter = { role: '', ageMin: 16, ageMax: 40, strMin: 0, strMax: 100, availability: 'all' };
   const loanFilter = { role: '', ageMin: 16, ageMax: 40, strMin: 0, strMax: 100 };
 
@@ -4234,7 +4783,7 @@ function showWinterMarketModal(onConfirm) {
         return `<div class="mm-row mm-done">❌ Offerta rifiutata — <strong>${player.firstName} ${player.lastName}</strong> ${stillHere ? 'rimane' : 'nel frattempo ha lasciato la rosa'}</div>`;
       }
       return `<div class="mm-row">
-        <div class="mm-pinfo">${formatNationality(player)}<span class="mm-name">${player.firstName} ${player.lastName}</span><span class="mm-badge role-${player.role}">${player.role}</span><span style="font-size:.78rem;color:#666">${formatSubRoles(player)}</span><span>${player.age}a</span><span>⚡${player.strength}</span><span class="mm-buyer-tag">🏟️ ${buyerTeam.name}</span></div>
+        <div class="mm-pinfo">${formatNationality(player)}<span class="mm-name">${player.firstName} ${player.lastName}</span>${formatRoleBadges(player)}<span style="font-size:.78rem;color:#666">${formatSubRoles(player)}</span><span>${player.age}a</span><span>⚡${player.strength}</span><span class="mm-buyer-tag">🏟️ ${buyerTeam.name}</span></div>
         <div class="mm-acts">
           <strong class="mm-price">${offerPrice.toFixed(1)}M€</strong>
           <button class="mm-btn mm-green" data-action="accept-offer" data-pid="${player.id}">Accetta</button>
@@ -4257,7 +4806,7 @@ function showWinterMarketModal(onConfirm) {
         ? `<button class="mm-btn mm-green" disabled title="Supera il monte ingaggi">🚫 Monte ingaggi</button>`
         : `${durationSelectHtml('data-dur-wrenew', player.id, player.contract?.duration)}<button class="mm-btn mm-green" data-action="wrenew" data-pid="${player.id}">Rinnova</button>`;
       return `<div class="mm-row">
-        <div class="mm-pinfo">${formatNationality(player)}<span class="mm-name">${player.firstName} ${player.lastName}</span><span class="mm-badge role-${player.role}">${player.role}</span><span style="font-size:.78rem;color:#666">${formatSubRoles(player)}</span><span>${player.age}a</span><span>⚡${player.strength}</span><span class="mm-salary-chg">${formatMoneyK(annualSalary(current))}€ → <strong>${formatMoneyK(annualSalary(demanded))}€</strong>/anno</span><span style="font-size:.75rem;color:#2f6fed">🏟️ Se non rinnovi entro fine stagione, firma gratis con ${interestedTeam.name}</span></div>
+        <div class="mm-pinfo">${formatNationality(player)}<span class="mm-name">${player.firstName} ${player.lastName}</span>${formatRoleBadges(player)}<span style="font-size:.78rem;color:#666">${formatSubRoles(player)}</span><span>${player.age}a</span><span>⚡${player.strength}</span><span class="mm-salary-chg">${formatMoneyK(annualSalary(current))}€ → <strong>${formatMoneyK(annualSalary(demanded))}€</strong>/anno</span><span style="font-size:.75rem;color:#2f6fed">🏟️ Se non rinnovi entro fine stagione, firma gratis con ${interestedTeam.name}</span></div>
         <div class="mm-acts">${renewBtn}</div></div>`;
     }).join('');
   };
@@ -4297,7 +4846,7 @@ function showWinterMarketModal(onConfirm) {
         const overCap = !wageCapAllows(playerTeam, salaryMk);
         const label = overCap ? '🚫 Monte ingaggi' : canAfford ? 'Acquista' : 'Fondi insuff.';
         html += `<div class="mm-row">
-          <div class="mm-pinfo">${formatNationality(p)}<span class="mm-name">${p.firstName} ${p.lastName}</span><span class="mm-badge role-${p.role}">${p.role}</span><span style="font-size:.78rem;color:#666">${formatSubRoles(p)}</span><span>${p.age}a</span><span>⚡${p.strength}</span><span class="mm-salary-tag">💼 ${formatMoneyK(annualSalary(salaryMk))}€/anno</span><span class="mm-from-tag">da ${fromTeam.name}</span></div>
+          <div class="mm-pinfo">${formatNationality(p)}<span class="mm-name">${p.firstName} ${p.lastName}</span>${formatRoleBadges(p)}<span style="font-size:.78rem;color:#666">${formatSubRoles(p)}</span><span>${p.age}a</span><span>⚡${p.strength}</span><span class="mm-salary-tag">💼 ${formatMoneyK(annualSalary(salaryMk))}€/anno</span><span class="mm-from-tag">da ${fromTeam.name}</span></div>
           <div class="mm-acts"><strong class="mm-price">${askingPrice.toFixed(1)}M€</strong>
             <button class="mm-btn mm-blue" data-action="wm-buy-market" data-pid="${p.id}" ${(canAfford && !overCap) ? '' : 'disabled'}>${label}</button>
           </div></div>`;
@@ -4309,7 +4858,7 @@ function showWinterMarketModal(onConfirm) {
         const salaryFa = getDisplaySalary(p.strength);
         const overCap = !wageCapAllows(playerTeam, salaryFa);
         html += `<div class="mm-row">
-          <div class="mm-pinfo">${formatNationality(p)}<span class="mm-name">${p.firstName} ${p.lastName}</span><span class="mm-badge role-${p.role}">${p.role}</span><span style="font-size:.78rem;color:#666">${formatSubRoles(p)}</span><span>${p.age}a</span><span>⚡${p.strength}</span><span class="mm-salary-tag">💼 ${formatMoneyK(annualSalary(salaryFa))}€/anno</span><span class="mm-free-tag">Svincolato</span></div>
+          <div class="mm-pinfo">${formatNationality(p)}<span class="mm-name">${p.firstName} ${p.lastName}</span>${formatRoleBadges(p)}<span style="font-size:.78rem;color:#666">${formatSubRoles(p)}</span><span>${p.age}a</span><span>⚡${p.strength}</span><span class="mm-salary-tag">💼 ${formatMoneyK(annualSalary(salaryFa))}€/anno</span><span class="mm-free-tag">Svincolato</span></div>
           <div class="mm-acts"><strong class="mm-price">Gratis</strong>
             ${overCap ? '' : durationSelectHtml('data-dur-sign', p.id)}
             <button class="mm-btn mm-blue" data-action="wm-buy-fa" data-pid="${p.id}" ${overCap ? 'disabled' : ''}>${overCap ? '🚫 Monte ingaggi' : 'Firma'}</button>
@@ -4339,7 +4888,7 @@ function showWinterMarketModal(onConfirm) {
       const canAdd = canPlayerSignMore(playerTeam) && canTeamAcquirePlayer(playerTeam, p);
       const salaryMk = p.contract?.salary ?? getDisplaySalary(p.strength);
       html += `<div class="mm-row">
-        <div class="mm-pinfo">${formatNationality(p)}<span class="mm-name">${p.firstName} ${p.lastName}</span><span class="mm-badge role-${p.role}">${p.role}</span><span style="font-size:.78rem;color:#666">${formatSubRoles(p)}</span><span>${p.age}a</span><span>⚡${p.strength}</span><span class="mm-salary-tag">💼 ${formatMoneyK(annualSalary(salaryMk))}€/anno</span><span class="mm-from-tag">da ${fromTeam.name}</span><span style="font-size:.75rem;color:#e67e22">📋 Scade a fine stagione</span></div>
+        <div class="mm-pinfo">${formatNationality(p)}<span class="mm-name">${p.firstName} ${p.lastName}</span>${formatRoleBadges(p)}<span style="font-size:.78rem;color:#666">${formatSubRoles(p)}</span><span>${p.age}a</span><span>⚡${p.strength}</span><span class="mm-salary-tag">💼 ${formatMoneyK(annualSalary(salaryMk))}€/anno</span><span class="mm-from-tag">da ${fromTeam.name}</span><span style="font-size:.75rem;color:#e67e22">📋 Scade a fine stagione</span></div>
         <div class="mm-acts"><strong class="mm-price">Gratis (pross. stagione)</strong>
           <button class="mm-btn mm-green" data-action="wm-precontract" data-pid="${p.id}" ${canAdd ? '' : 'disabled'}>${canAdd ? 'Firma Pre-contratto' : 'Rosa completa'}</button>
         </div></div>`;
@@ -4349,7 +4898,7 @@ function showWinterMarketModal(onConfirm) {
 
   const buildRosaTab = () => {
     if (!playerTeam.roster.length) return '<p class="mm-empty">Rosa vuota.</p>';
-    const roleOrder = { POR: 0, DIF: 1, CEN: 2, ATT: 3 };
+    const roleOrder = ROLE_ORDER;
     const sorted = [...playerTeam.roster].sort((a, b) => (roleOrder[a.role] - roleOrder[b.role]) || b.strength - a.strength);
     const loanedInIds = new Set(
       activeLoans.filter(l => l.loanTeam === playerTeam).map(l => l.player.id)
@@ -4381,7 +4930,7 @@ function showWinterMarketModal(onConfirm) {
       const mainRow = `<tr class="db-row-clickable" data-player-id="${p.id}">
         <td class="col-naz">${formatNationality(p)}</td>
         <td><span class="player-name-link">${p.firstName} ${p.lastName}</span>${injury}${susp}</td>
-        <td>${p.role}</td><td style="font-size:.82rem;color:#666">${formatSubRoles(p)}</td><td>${p.age}</td>
+        <td>${formatRoleBadges(p)}</td><td style="font-size:.82rem;color:#666">${formatSubRoles(p)}</td><td>${p.age}</td>
         <td><strong>${p.strength}</strong></td>
         <td>${formatMoneyK(sal)}€/anno</td><td>${dur}</td>
         ${actionsCell}
@@ -4399,13 +4948,39 @@ function showWinterMarketModal(onConfirm) {
 
       return mainRow + panelRow;
     }).join('');
-    const formationNote = playerTeam.coach?.formation
-      ? `<div style="margin-bottom:8px;font-size:.85rem;color:#557">⚽ Modulo: <strong>${playerTeam.coach.formation}</strong></div>`
+    const formationNote = playerTeam.coach?.formations?.length
+      ? `<div style="margin-bottom:8px;font-size:.85rem;color:#557">⚽ Modulo: <strong>${pickActiveFormation(playerTeam)}</strong></div>`
       : '';
     return `${formationNote}<table style="font-size:.85rem">
       <thead><tr><th class="col-naz">Naz.</th><th>Nome</th><th>Ruolo</th><th>Posizione</th><th>Età</th><th>Forza</th><th>Stipendio</th><th>Contratto</th><th>Azioni</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
+  };
+
+  // Tab "Moduli": stesso contenuto della schermata Allenatore (showCoachDetailScreen),
+  // qui incorporato come tab del mercato invece che in un overlay a parte —
+  // formazione tipo (ignoreForma: infortunati/squalificati/fuori forma restano
+  // candidati validi, non è la formazione che scenderà davvero in campo alla
+  // prossima giornata) coi 2 moduli preferiti selezionabili. Il mercato
+  // invernale non ha una tab Panchina (l'allenatore non si cambia a gennaio),
+  // ma il modulo resta comunque consultabile.
+  const buildModuliTab = () => {
+    const coach = playerTeam.coach;
+    if (!coach) return '<p class="mm-empty">Nessun allenatore in carica.</p>';
+    const activeFormation = pickActiveFormation(playerTeam);
+    const preferredFormations = coach.formations?.length ? [...new Set(coach.formations)] : [activeFormation];
+    if (!moduliFormation || !preferredFormations.includes(moduliFormation)) moduliFormation = activeFormation;
+    const best11 = getBest11(playerTeam.roster, moduliFormation, { ignoreForma: true });
+    const positioned = computePitchPositions(best11);
+    const formationBtn = (name) => `<button type="button" class="mm-seg${moduliFormation === name ? ' active' : ''}" data-moduli-formation="${name}">${name}${name === activeFormation ? ' ⭐' : ''}</button>`;
+    const viewBtn = (val, label) => `<button type="button" class="mm-seg${moduliView === val ? ' active' : ''}" data-moduli-view="${val}">${label}</button>`;
+    const body = moduliView === 'modulo' ? buildCoachScreenPitchHtml(positioned) : buildCoachScreenBest11ListHtml(best11, false);
+    return `<div class="moduli-tab-wrap">
+      <p style="font-size:.85rem;color:#557;margin:0 2px 10px">Moduli preferiti di <strong>${coach.firstName} ${coach.lastName}</strong>: <strong>${(coach.formations || []).join(' / ') || activeFormation}</strong> — in campo: <strong>${activeFormation}</strong></p>
+      ${preferredFormations.length > 1 ? `<div class="mm-seg-group" style="margin-bottom:8px">${preferredFormations.map(formationBtn).join('')}</div>` : ''}
+      <div class="mm-seg-group" style="margin-bottom:10px">${viewBtn('modulo', '📐 Modulo')}${viewBtn('best11', '🧮 Migliori 11')}</div>
+      <div class="coach-screen-view">${body}</div>
+    </div>`;
   };
 
   const buildPrestitiTab = () => {
@@ -4435,7 +5010,7 @@ function showWinterMarketModal(onConfirm) {
       const salary = p.contract?.salary ?? getDisplaySalary(p.strength);
       const overCap = !wageCapAllows(playerTeam, salary);
       return `<div class="mm-row">
-      <div class="mm-pinfo">${formatNationality(p)}<span class="mm-name">${p.firstName} ${p.lastName}</span><span class="mm-badge role-${p.role}">${p.role}</span><span style="font-size:.78rem;color:#666">${formatSubRoles(p)}</span><span>${p.age}a</span><span>⚡${p.strength}</span><span class="mm-salary-tag">💼 ${formatMoneyK(annualSalary(salary))}€/anno</span><span class="mm-from-tag">da ${fromTeam.name}</span></div>
+      <div class="mm-pinfo">${formatNationality(p)}<span class="mm-name">${p.firstName} ${p.lastName}</span>${formatRoleBadges(p)}<span style="font-size:.78rem;color:#666">${formatSubRoles(p)}</span><span>${p.age}a</span><span>⚡${p.strength}</span><span class="mm-salary-tag">💼 ${formatMoneyK(annualSalary(salary))}€/anno</span><span class="mm-from-tag">da ${fromTeam.name}</span></div>
       <div class="mm-acts"><strong class="mm-price">Gratis</strong><button class="mm-btn mm-blue" data-action="loan-in" data-cand-idx="${i}" ${overCap ? 'disabled' : ''}>${overCap ? '🚫 Monte ingaggi' : 'Richiedi'}</button></div></div>`;
     }).join('');
     return html;
@@ -4444,10 +5019,11 @@ function showWinterMarketModal(onConfirm) {
   const render = (resetScroll) => {
     const tabContent = activeTab === 'rinnovi' ? buildRinnoviTab()
       : activeTab === 'offerte' ? buildOfferteTab()
-      : activeTab === 'acquisti' ? buildAcquistiTab()
-      : activeTab === 'precontratti' ? buildPreContrattiTab()
-      : activeTab === 'prestiti' ? buildPrestitiTab()
-      : buildRosaTab();
+        : activeTab === 'acquisti' ? buildAcquistiTab()
+          : activeTab === 'prestiti' ? buildPrestitiTab()
+            : activeTab === 'precontratti' ? buildPreContrattiTab()
+              : activeTab === 'moduli' ? buildModuliTab()
+                : buildRosaTab();
     // Mantiene la posizione di scorrimento della lista tra un'azione e l'altra
     // (es. "Rinnova"): overlay.innerHTML ricrea .mm-content da zero ad ogni
     // render, altrimenti la vista tornerebbe sempre in cima. Si azzera solo
@@ -4466,12 +5042,13 @@ function showWinterMarketModal(onConfirm) {
         </div>
         ${buildBudgetSliderHtml(playerTeam)}
         <div class="mm-tabs">
-          <button class="mm-tab${activeTab==='rinnovi'?' active':''}" data-tab="rinnovi">Rinnovi${winterRenewPending > 0 ? ` <span class="mm-badge-count">${winterRenewPending}</span>` : ''}</button>
-          <button class="mm-tab${activeTab==='offerte'?' active':''}" data-tab="offerte">Offerte ricevute${winterOfferPending > 0 ? ` <span class="mm-badge-count">${winterOfferPending}</span>` : ''}</button>
-          <button class="mm-tab${activeTab==='acquisti'?' active':''}" data-tab="acquisti">Acquisti</button>
-          <button class="mm-tab${activeTab==='precontratti'?' active':''}" data-tab="precontratti">Pre-contratti${pendingPreContracts.length > 0 ? ` <span class="mm-badge-count" style="background:#15803d">${pendingPreContracts.length}</span>` : ''}</button>
-          <button class="mm-tab${activeTab==='prestiti'?' active':''}" data-tab="prestiti">Prestiti <span class="mm-badge-count" style="background:#2f6fed">${getIncomingLoanCount(playerTeam)}/${MAX_INCOMING_LOANS}</span></button>
-          <button class="mm-tab${activeTab==='rosa'?' active':''}" data-tab="rosa">Rosa (${playerTeam.roster.length})</button>
+          <button class="mm-tab${activeTab === 'rinnovi' ? ' active' : ''}" data-tab="rinnovi">Rinnovi${winterRenewPending > 0 ? ` <span class="mm-badge-count">${winterRenewPending}</span>` : ''}</button>
+          <button class="mm-tab${activeTab === 'offerte' ? ' active' : ''}" data-tab="offerte">Offerte ricevute${winterOfferPending > 0 ? ` <span class="mm-badge-count">${winterOfferPending}</span>` : ''}</button>
+          <button class="mm-tab${activeTab === 'acquisti' ? ' active' : ''}" data-tab="acquisti">Acquisti</button>
+          <button class="mm-tab${activeTab === 'prestiti' ? ' active' : ''}" data-tab="prestiti">Prestiti <span class="mm-badge-count" style="background:#2f6fed">${getIncomingLoanCount(playerTeam)}/${MAX_INCOMING_LOANS}</span></button>
+          <button class="mm-tab${activeTab === 'precontratti' ? ' active' : ''}" data-tab="precontratti">Pre-contratti${pendingPreContracts.length > 0 ? ` <span class="mm-badge-count" style="background:#15803d">${pendingPreContracts.length}</span>` : ''}</button>
+          <button class="mm-tab${activeTab === 'moduli' ? ' active' : ''}" data-tab="moduli">Moduli</button>
+          <button class="mm-tab${activeTab === 'rosa' ? ' active' : ''}" data-tab="rosa">Rosa (${playerTeam.roster.length})</button>
         </div>
         <div class="mm-content">${tabContent}</div>
         <div class="mm-footer">
@@ -4488,6 +5065,12 @@ function showWinterMarketModal(onConfirm) {
 
     wireFilterBar(overlay, activeTab === 'prestiti' ? loanFilter : filter, render);
     wireBudgetSlider(overlay, playerTeam, render);
+    overlay.querySelectorAll('[data-moduli-view]').forEach(btn =>
+      btn.addEventListener('click', () => { moduliView = btn.dataset.moduliView; render(); })
+    );
+    overlay.querySelectorAll('[data-moduli-formation]').forEach(btn =>
+      btn.addEventListener('click', () => { moduliFormation = btn.dataset.moduliFormation; render(); })
+    );
 
     overlay.querySelectorAll('tr[data-player-id]').forEach(tr => {
       tr.addEventListener('click', (e) => {
@@ -4571,10 +5154,14 @@ function showWinterMarketModal(onConfirm) {
         } else if (action === 'wm-precontract') {
           const target = expiringTargets.find(t => t.player.id === id);
           if (target && canPlayerSignMore(playerTeam) && canTeamAcquirePlayer(playerTeam, target.player) && !preContractIds.has(id) && target.player.strength <= leagueStrCap(playerTeam.leagueLevel)) {
-            // toTeam: il pre-contratto appartiene al club, non al DS (che può andarsene)
-            pendingPreContracts.push({ ...target, toTeam: playerTeam });
+            // toTeam: il pre-contratto appartiene al club, non al DS (che può andarsene).
+            // signedSalary: lo stipendio mostrato in questo momento (quello del
+            // contratto attuale del giocatore) — è quello che verrà applicato al
+            // trasferimento vero e proprio a fine stagione, non ricalcolato allora.
+            const signedSalary = target.player.contract?.salary ?? getDisplaySalary(target.player.strength);
+            pendingPreContracts.push({ ...target, toTeam: playerTeam, signedSalary });
             preContractIds.add(id);
-            transferLog.push(`📋 Pre-contratto: <strong>${playerTeam.name}</strong> firma con ${target.player.firstName} ${target.player.lastName} — arriverà la prossima stagione`);
+            transferLog.push(`📋 Pre-contratto: <strong>${playerTeam.name}</strong> firma con ${target.player.firstName} ${target.player.lastName} — arriverà la prossima stagione (${formatMoneyK(annualSalary(signedSalary))}€/anno)`);
           }
         } else if (action === 'rosa-toggle-renew') {
           rosaRowPanel.set(id, rosaRowPanel.get(id) === 'renew' ? null : 'renew');
@@ -4742,7 +5329,7 @@ document.getElementById('simulaStagione').addEventListener('click', function () 
     // il DS nel frattempo se n'è andato o è stato esonerato.
     if (pendingPreContracts.length > 0) {
       const touchedTeams = new Set();
-      pendingPreContracts.forEach(({ player, fromTeam, toTeam }) => {
+      pendingPreContracts.forEach(({ player, fromTeam, toTeam, signedSalary }) => {
         const dest = toTeam || playerTeam; // fallback per salvataggi senza toTeam
         // Rimuovi da fromTeam (se ancora lì)
         if (fromTeam && fromTeam.roster) {
@@ -4752,14 +5339,25 @@ document.getElementById('simulaStagione').addEventListener('click', function () 
         // Rimuovi da freeAgents se il contratto è scaduto e l'AI l'ha svincolato
         const faIdx = freeAgents.indexOf(player);
         if (faIdx >= 0) freeAgents.splice(faIdx, 1);
-        // Aggiungi al club firmatario solo se non è già in rosa (evita duplicati)
-        if (dest && dest.roster && canAddRole(dest, player.role) && canTeamAcquirePlayer(dest, player) && !dest.roster.includes(player)) {
+        // Un pre-contratto è un accordo già firmato mesi prima (a gennaio): il
+        // trasferimento è garantito, non va ri-condizionato ai tetti di rosa/
+        // monte ingaggi del club com'è a FINE stagione (possono essere cambiati
+        // nel frattempo) — altrimenti l'accordo "sfumerebbe" per condizioni che
+        // nessuno dei due poteva conoscere al momento della firma. Il nuovo
+        // contratto riprende lo stipendio mostrato in fase di firma
+        // (signedSalary), con una durata nuova realistica per età/forza.
+        if (dest && dest.roster && !dest.roster.includes(player)) {
+          const newContract = createContract(player.strength, player.age);
+          newContract.salary = signedSalary ?? newContract.salary;
+          player.contract = newContract;
           dest.roster.push(player);
           touchedTeams.add(dest);
           recordTransfer(player, dest.name, 0);
-          transferLog.push(`✍️ Pre-contratto: <strong>${player.firstName} ${player.lastName}</strong> arriva a <strong>${dest.name}</strong> (parametro zero)`);
+          transferLog.push(`✍️ Pre-contratto: <strong>${player.firstName} ${player.lastName}</strong> arriva a <strong>${dest.name}</strong> (parametro zero, ${formatMoneyK(annualSalary(newContract.salary))}€/anno)`);
         } else {
-          // Nessuna destinazione valida: il giocatore resta svincolato
+          // Nessuna destinazione valida (es. squadra non più esistente): il
+          // giocatore resta svincolato — unico caso residuo, non più i tetti
+          // di rosa/ingaggi.
           freeAgents.push(player);
           transferLog.push(`🔚 Pre-contratto sfumato: <em>${player.firstName} ${player.lastName}</em> resta svincolato`);
         }
@@ -4921,12 +5519,14 @@ document.getElementById('simulaStagione').addEventListener('click', function () 
         // se è cambiato (esonero/corteggiamento) li ha già fissati hirePlayerAsDS.
         if (playerTeam === teamBeforeEval) briefPresidentBudget(playerTeam);
         showPresidentBriefingModal(playerTeam, () => {
-          showManagerMarketModal(() => {
-            recalculateTeamStrength(playerTeam);
-            displayTransferLog();
-            seasonPhase = 0;
-            updateSeasonBtn();
-            saveGame();
+          showSeasonFormationNotice(playerTeam, () => {
+            showManagerMarketModal(() => {
+              recalculateTeamStrength(playerTeam);
+              displayTransferLog();
+              seasonPhase = 0;
+              updateSeasonBtn();
+              saveGame();
+            });
           });
         });
       } else {
@@ -5025,8 +5625,8 @@ function archiveStaffSeasonHistory() {
     const numTeams = standings ? Object.keys(standings).length : null;
     const rank = rankOf(standings, team.name);
     const note = [
-      rank === 1 ? '🏆 Primo posto' : '',
-      s_coppaResult && s_coppaResult.winner === team ? '🏆 Coppa Italia' : '',
+      rank === 1 ? `${trophyIconHtml('scudetto', 'Primo posto')} Primo posto` : '',
+      s_coppaResult && s_coppaResult.winner === team ? `${trophyIconHtml('coppa', 'Coppa Italia')} Coppa Italia` : '',
       team.leagueLevel !== 'A' && rank && rank <= NUM_PROMO_RELEG ? '🎉 Promozione' : '',
       team.leagueLevel !== 'C' && rank && numTeams && rank > numTeams - NUM_PROMO_RELEG ? '📉 Retrocessione' : '',
     ].filter(Boolean).join(' · ');
@@ -5379,7 +5979,7 @@ function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newS
       const needed = neededRoles(team);
       const youthRole = canAddRole(team, p.role) ? p.role
         : needed.length > 0 ? needed[Math.floor(Math.random() * needed.length)]
-        : ['DIF', 'CEN', 'ATT'].find(r => canAddRole(team, r)) || p.role;
+          : ROLES.filter(r => r !== 'POR').find(r => canAddRole(team, r)) || p.role;
       const youth = createYouthPlayer(youthRole, team);
       team.roster.push(youth);
       transferLog.push(`🌱 <strong>${youth.firstName} ${youth.lastName}</strong> (${youth.age} anni, Forza: ${youth.strength}) promosso nel settore giovanile di <strong>${team.name}</strong>`);
@@ -5774,7 +6374,7 @@ function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newS
         recordTransfer(fa, team.name, 0);
         transferLog.push(`✍️ <strong>${team.name}</strong> ingaggia ${fa.firstName} ${fa.lastName} (Forza: ${fa.strength}) per completare la rosa`);
       } else {
-        const youthRoles = needed.length > 0 ? needed : ['DIF', 'CEN', 'ATT'].filter(r => canAddRole(team, r));
+        const youthRoles = needed.length > 0 ? needed : ROLES.filter(r => r !== 'POR' && canAddRole(team, r));
         const role = youthRoles[Math.floor(Math.random() * youthRoles.length)] || 'CEN';
         const youth = createYouthPlayer(role, team);
         team.roster.push(youth);
@@ -5794,7 +6394,7 @@ function displayCoppaItalia(coppaResult) {
   }
 
   const { winner, rounds, roundNames } = coppaResult;
-  let html = `<h2>Coppa Italia <span class="coppa-winner-badge">🏆 ${winner.name}</span></h2>`;
+  let html = `<h2>Coppa Italia <span class="coppa-winner-badge">${trophyIconHtml('coppa', 'Coppa Italia')} ${winner.name}</span></h2>`;
 
   rounds.forEach((roundMatches, i) => {
     const name = roundNames[i] || `Turno ${i + 1}`;
@@ -6234,8 +6834,8 @@ function showManagerMarketModal(onConfirm) {
   pendingForeignScoutTargets = playerTeam.leagueLevel === 'A' ? generateForeignScoutTargets() : [];
 
   const renewalDecisions = new Map(); // player.id → 'renewed' | 'released'
-  const offerDecisions   = new Map(); // player.id → 'accepted' | 'refused'
-  const boughtIds        = new Set(); // player.id già acquistati
+  const offerDecisions = new Map(); // player.id → 'accepted' | 'refused'
+  const boughtIds = new Set(); // player.id già acquistati
   // Se il giocatore lascia la rosa da un percorso diverso dalla tab Offerte
   // (Vendi/Presta/Svincola dalla tab Rosa), un'eventuale offerta AI pendente
   // per lui va invalidata subito: altrimenti resterebbe accettabile per un
@@ -6253,6 +6853,8 @@ function showManagerMarketModal(onConfirm) {
   let loanCandidates = []; // ricostruito a ogni render della tab Prestiti: idx → { player, fromTeam }
   let activeTab = !playerTeam.coach ? 'panchina' : pendingRenewals.length > 0 ? 'rinnovi' : 'rosa';
   let coachAvail = 'all'; // vista tab Panchina: 'all' | 'free' | 'market'
+  let moduliView = 'modulo'; // vista tab Moduli: 'modulo' | 'best11'
+  let moduliFormation = null; // modulo selezionato nella tab Moduli (lazy: parte dall'attivo)
 
   // Azioni per-riga nella tab Rosa (Rinnova/Vendi/Presta sempre disponibili
   // per ogni giocatore): le proposte di acquisto/prestito si generano una
@@ -6290,7 +6892,7 @@ function showManagerMarketModal(onConfirm) {
     return pendingRenewals.map(player => {
       const d = renewalDecisions.get(player.id);
       const demanded = getRenewalSalary(player);
-      const current  = player.contract?.salary || getDisplaySalary(player.strength);
+      const current = player.contract?.salary || getDisplaySalary(player.strength);
       const interestedTeam = renewalInterest.get(player.id);
       if (d === 'renewed') return `<div class="mm-row mm-done">✅ <strong>${player.firstName} ${player.lastName}</strong> rinnovato — ${formatMoneyK(annualSalary(demanded))}€/anno</div>`;
       if (d === 'released') return `<div class="mm-row mm-done">🔚 <strong>${player.firstName} ${player.lastName}</strong> ${interestedTeam ? `firmato con <strong>${interestedTeam.name}</strong> a parametro zero` : 'svincolato'}</div>`;
@@ -6300,7 +6902,7 @@ function showManagerMarketModal(onConfirm) {
         : `${durationSelectHtml('data-dur-renew', player.id, player.contract?.duration)}<button class="mm-btn mm-green" data-action="renew" data-pid="${player.id}">Rinnova</button>`;
       const interestNote = interestedTeam ? `<span style="font-size:.75rem;color:#2f6fed">🏟️ Se non rinnovi, firma gratis con ${interestedTeam.name}</span>` : '';
       return `<div class="mm-row">
-        <div class="mm-pinfo">${formatNationality(player)}<span class="mm-name">${player.firstName} ${player.lastName}</span><span class="mm-badge role-${player.role}">${player.role}</span><span style="font-size:.78rem;color:#666">${formatSubRoles(player)}</span><span>${player.age}a</span><span>⚡${player.strength}</span><span class="mm-salary-chg">${formatMoneyK(annualSalary(current))}€ → <strong>${formatMoneyK(annualSalary(demanded))}€</strong>/anno</span>${interestNote}</div>
+        <div class="mm-pinfo">${formatNationality(player)}<span class="mm-name">${player.firstName} ${player.lastName}</span>${formatRoleBadges(player)}<span style="font-size:.78rem;color:#666">${formatSubRoles(player)}</span><span>${player.age}a</span><span>⚡${player.strength}</span><span class="mm-salary-chg">${formatMoneyK(annualSalary(current))}€ → <strong>${formatMoneyK(annualSalary(demanded))}€</strong>/anno</span>${interestNote}</div>
         <div class="mm-acts">
           ${renewBtn}
           <button class="mm-btn mm-red"   data-action="release" data-pid="${player.id}">Svincola</button>
@@ -6323,7 +6925,7 @@ function showManagerMarketModal(onConfirm) {
         return `<div class="mm-row mm-done">❌ Offerta rifiutata — <strong>${player.firstName} ${player.lastName}</strong> ${stillHere ? 'rimane' : 'nel frattempo ha lasciato la rosa'}</div>`;
       }
       return `<div class="mm-row">
-        <div class="mm-pinfo">${formatNationality(player)}<span class="mm-name">${player.firstName} ${player.lastName}</span><span class="mm-badge role-${player.role}">${player.role}</span><span style="font-size:.78rem;color:#666">${formatSubRoles(player)}</span><span>${player.age}a</span><span>⚡${player.strength}</span><span class="mm-buyer-tag">🏟️ ${buyerTeam.name}</span></div>
+        <div class="mm-pinfo">${formatNationality(player)}<span class="mm-name">${player.firstName} ${player.lastName}</span>${formatRoleBadges(player)}<span style="font-size:.78rem;color:#666">${formatSubRoles(player)}</span><span>${player.age}a</span><span>⚡${player.strength}</span><span class="mm-buyer-tag">🏟️ ${buyerTeam.name}</span></div>
         <div class="mm-acts">
           <strong class="mm-price">${offerPrice.toFixed(1)}M€</strong>
           <button class="mm-btn mm-green" data-action="accept-offer" data-pid="${player.id}">Accetta</button>
@@ -6357,17 +6959,17 @@ function showManagerMarketModal(onConfirm) {
       activeLoans.filter(l => l.loanTeam === playerTeam).map(l => l.player.id)
     );
 
-    const roleOrder = { POR: 0, DIF: 1, CEN: 2, ATT: 3 };
+    const roleOrder = ROLE_ORDER;
     const sorted = [...all].sort((a, b) => (roleOrder[a.role] - roleOrder[b.role]) || b.strength - a.strength);
 
     // Conteggio della rosa attuale (chi scende in campo questa stagione):
     // include i giocatori in prestito in ingresso, che contano a tutti gli
     // effetti per i minimi di ruolo finché restano — solo chi sta lasciando
     // il club (rinnovo rifiutato) non conta più.
-    const nextCounts = { POR: 0, DIF: 0, CEN: 0, ATT: 0 };
+    const nextCounts = {}; ROLES.forEach(r => { nextCounts[r] = 0; });
     currentRoster.forEach(p => { if (!leavingIds.has(p.id)) nextCounts[p.role]++; });
     precontracts.forEach(p => nextCounts[p.role]++);
-    const nextTotal = nextCounts.POR + nextCounts.DIF + nextCounts.CEN + nextCounts.ATT;
+    const nextTotal = Object.values(nextCounts).reduce((a, b) => a + b, 0);
 
     // Nessun vincolo per ruolo per il giocatore umano: i badge sono solo
     // informativi (nessun minimo/massimo, nessun riempimento automatico).
@@ -6381,12 +6983,12 @@ function showManagerMarketModal(onConfirm) {
       : effTotal >= PLAYER_ROSTER_MAX
         ? `<div style="margin-top:6px;color:#b45309;font-size:.8rem;font-weight:600">⚠️ Rosa al tetto massimo di ${PLAYER_ROSTER_MAX} giocatori (prestiti in uscita inclusi): nessun altro acquisto possibile finché non liberi posto</div>`
         : '';
-    const formationNote = playerTeam.coach?.formation
-      ? ` <span style="font-weight:400;color:#557">— Modulo: <strong>${playerTeam.coach.formation}</strong></span>`
+    const formationNote = playerTeam.coach?.formations?.length
+      ? ` <span style="font-weight:400;color:#557">— Modulo: <strong>${pickActiveFormation(playerTeam)}</strong></span>`
       : '';
     const summary = `<div style="margin-bottom:10px;padding:8px 10px;background:#eef7ff;border:1px solid #bcd;border-radius:6px;font-size:.85rem">
       <div style="font-weight:700;margin-bottom:6px">📋 Rosa attuale (${nextTotal} giocatori)${formationNote}</div>
-      ${['POR','DIF','CEN','ATT'].map(countsBadge).join('')}
+      ${ROLES.map(countsBadge).join('')}
       ${alertMissing}
     </div>`;
 
@@ -6399,19 +7001,19 @@ function showManagerMarketModal(onConfirm) {
       const willRetire = !isPrecontract && !isLoanedIn && p.age >= 36;
 
       let status;
-      if (isLoanedIn)         status = '<span style="color:#64748b;font-weight:700">🔄 in prestito</span>';
+      if (isLoanedIn) status = '<span style="color:#64748b;font-weight:700">🔄 in prestito</span>';
       else if (isPrecontract) status = '<span style="color:#2f6fed;font-weight:700">📝 pre-contratto</span>';
-      else if (isLeaving)     status = '<span style="color:#e05050;font-weight:700">👋 in uscita</span>';
-      else if (willRetire)    status = '<span style="color:#8e44ad;font-weight:700">🎓 si ritira</span>';
-      else if (isRenewed)     status = '<span style="color:#15803d;font-weight:700">✅ rinnovato</span>';
+      else if (isLeaving) status = '<span style="color:#e05050;font-weight:700">👋 in uscita</span>';
+      else if (willRetire) status = '<span style="color:#8e44ad;font-weight:700">🎓 si ritira</span>';
+      else if (isRenewed) status = '<span style="color:#15803d;font-weight:700">✅ rinnovato</span>';
       else if (!durVal || durVal <= 0) status = '<span style="color:#e05050">⚠️ scad.</span>';
-      else                    status = `${durVal}a`;
+      else status = `${durVal}a`;
 
       const rowStyle = isLoanedIn ? 'background:#f1f5f9'
         : isPrecontract ? 'background:#e3f2fd'
-        : isLeaving ? 'background:#fee'
-        : willRetire ? 'background:#f5eefa'
-        : '';
+          : isLeaving ? 'background:#fee'
+            : willRetire ? 'background:#f5eefa'
+              : '';
       const sal = annualSalary(p.contract?.salary ?? getDisplaySalary(p.strength));
 
       // Rinnova/Vendi/Presta/Svincola sempre disponibili per ogni giocatore
@@ -6435,7 +7037,7 @@ function showManagerMarketModal(onConfirm) {
       const mainRow = `<tr class="db-row-clickable" data-player-id="${p.id}" style="${rowStyle}">
         <td class="col-naz">${formatNationality(p)}</td>
         <td><span class="player-name-link">${p.firstName} ${p.lastName}</span></td>
-        <td>${p.role}</td><td style="font-size:.82rem;color:#666">${formatSubRoles(p)}</td><td>${p.age}</td>
+        <td>${formatRoleBadges(p)}</td><td style="font-size:.82rem;color:#666">${formatSubRoles(p)}</td><td>${p.age}</td>
         <td><strong>${p.strength}</strong></td>
         <td>${formatMoneyK(sal)}€/anno</td><td>${status}</td>
         ${actionsCell}
@@ -6469,13 +7071,14 @@ function showManagerMarketModal(onConfirm) {
 
     // ── Allenatore attuale ────────────────────────────────────────────────
     if (coach && expired) {
-      const fit = getFormationFitLabel(playerTeam, coach.formation);
+      const activeFormation = pickActiveFormation(playerTeam);
+      const fit = getFormationFitLabel(playerTeam, activeFormation);
       html += `<div class="mm-row" style="background:#fdecea">
         <div class="mm-pinfo">
           <span class="mm-name">${coach.firstName} ${coach.lastName}</span>
           <span>${coach.age}a</span>
           <span>⚡${coach.strength}</span>
-          <span class="mm-badge" title="${formatFormationRequirements(coach.formation)}">${coach.formation}</span>
+          <span class="mm-badge" title="${formatFormationRequirements(activeFormation)}">${(coach.formations || []).join(' / ')}</span>
           <span style="font-size:.8rem;color:${fit.color};font-weight:600">${fit.text}</span>
           <span class="mm-salary-tag">💼 ${formatMoneyK(annualSalary(getDisplaySalary(coach.strength)))}€/anno</span>
           <span style="font-size:.8rem;color:#b91c1c;font-weight:700">⚠️ contratto scaduto</span>
@@ -6487,7 +7090,8 @@ function showManagerMarketModal(onConfirm) {
         </div></div>
         <p style="font-size:.82rem;color:#666;margin:10px 2px">Il contratto è scaduto: rinnovalo scegliendo la durata, oppure lascialo andare gratuitamente e ingaggiane un altro dal mercato qui sotto.</p>`;
     } else if (coach) {
-      const fit = getFormationFitLabel(playerTeam, coach.formation);
+      const activeFormation = pickActiveFormation(playerTeam);
+      const fit = getFormationFitLabel(playerTeam, activeFormation);
       const severance = getCoachSeveranceCost(coach);
       const canAfford = playerTeam.budget >= severance;
       html += `<div class="mm-row" style="background:#eef7ff">
@@ -6495,7 +7099,7 @@ function showManagerMarketModal(onConfirm) {
           <span class="mm-name">${coach.firstName} ${coach.lastName}</span>
           <span>${coach.age}a</span>
           <span>⚡${coach.strength}</span>
-          <span class="mm-badge" title="${formatFormationRequirements(coach.formation)}">${coach.formation}</span>
+          <span class="mm-badge" title="${formatFormationRequirements(activeFormation)}">${(coach.formations || []).join(' / ')}</span>
           <span style="font-size:.8rem;color:${fit.color};font-weight:600">${fit.text}</span>
           <span class="mm-salary-tag">💼 ${formatMoneyK(annualSalary(coach.contract?.salary ?? getDisplaySalary(coach.strength)))}€/anno</span>
           <span style="font-size:.8rem;color:#666">Contratto: ${coach.contract.duration}a</span>
@@ -6505,7 +7109,7 @@ function showManagerMarketModal(onConfirm) {
             ${canAfford ? `Esonera (${severance.toFixed(1)}M€)` : 'Fondi insuff. per esonero'}
           </button>
         </div></div>
-        <p style="font-size:.82rem;color:#666;margin:10px 2px">Il modulo dell'allenatore determina la formazione in campo (posizioni richieste: <strong>${formatFormationRequirements(coach.formation)}</strong>). Puoi anche ingaggiare direttamente un allenatore dal mercato qui sotto: quello attuale verrà esonerato in automatico (buonuscita inclusa).</p>`;
+        <p style="font-size:.82rem;color:#666;margin:10px 2px">Il modulo attivo dell'allenatore determina la formazione in campo (posizioni richieste: <strong>${formatFormationRequirements(activeFormation)}</strong> — l'allenatore ha 2 moduli preferiti, in campo scende quello che rende di più con la rosa attuale). Puoi anche ingaggiare direttamente un allenatore dal mercato qui sotto: quello attuale verrà esonerato in automatico (buonuscita inclusa).</p>`;
     } else {
       html += `<div style="background:#fdecea;border:1px solid #ef4444;border-radius:6px;padding:8px 12px;margin-bottom:12px;color:#b91c1c;font-weight:600">⚠️ Sei senza allenatore — scegline uno dal mercato qui sotto prima di continuare.</div>`;
     }
@@ -6527,14 +7131,21 @@ function showManagerMarketModal(onConfirm) {
     // a prescindere dalla forza (comportamento precedente, segnalato
     // dall'utente come poco intuitivo).
     const canAffordSwap = playerTeam.budget >= outgoingSeverance;
+    // Il candidato ha 2 moduli preferiti (coach.formations, come un allenatore
+    // già in carica): il "fit" mostrato qui simula quale dei due sceglierebbe
+    // con la ROSA ATTUALE del giocatore (pickActiveFormation su un team
+    // fittizio {coach: c, roster: playerTeam.roster}), stessa logica usata a
+    // ingaggio avvenuto.
+    const candidateActiveFormation = (c) => pickActiveFormation({ coach: c, roster: playerTeam.roster });
     const renderFreeCoachRow = (c, i) => {
-      const fit = getFormationFitLabel(playerTeam, c.formation);
+      const candFormation = candidateActiveFormation(c);
+      const fit = getFormationFitLabel(playerTeam, candFormation);
       return `<div class="mm-row">
         <div class="mm-pinfo">
           <span class="mm-name">${c.firstName} ${c.lastName}</span>
           <span>${c.age}a</span>
           <span>⚡${c.strength}</span>
-          <span class="mm-badge" title="${formatFormationRequirements(c.formation)}">${c.formation}</span>
+          <span class="mm-badge" style="cursor:pointer;text-decoration:underline dotted" title="Clicca per vedere i moduli — ${formatFormationRequirements(candFormation)}" data-action="view-coach-formations" data-cand-idx="${i}" data-cand-kind="free">${(c.formations || []).join(' / ')}</span>
           <span style="font-size:.8rem;color:${fit.color};font-weight:600">${fit.text}</span>
           <span class="mm-salary-tag">💼 ${formatMoneyK(annualSalary(getDisplaySalary(c.strength)))}€/anno</span>
           <span style="font-size:.75rem;color:#15803d">🆓 svincolato</span>
@@ -6547,7 +7158,8 @@ function showManagerMarketModal(onConfirm) {
         </div></div>`;
     };
     const renderMarketCoachRow = ({ coach: c, fromTeam }, i) => {
-      const fit = getFormationFitLabel(playerTeam, c.formation);
+      const candFormation = candidateActiveFormation(c);
+      const fit = getFormationFitLabel(playerTeam, candFormation);
       const price = getCoachTransferValue(c);
       const totalCost = price + outgoingSeverance;
       const canAfford = playerTeam.budget >= totalCost;
@@ -6556,7 +7168,7 @@ function showManagerMarketModal(onConfirm) {
           <span class="mm-name">${c.firstName} ${c.lastName}</span>
           <span>${c.age}a</span>
           <span>⚡${c.strength}</span>
-          <span class="mm-badge" title="${formatFormationRequirements(c.formation)}">${c.formation}</span>
+          <span class="mm-badge" style="cursor:pointer;text-decoration:underline dotted" title="Clicca per vedere i moduli — ${formatFormationRequirements(candFormation)}" data-action="view-coach-formations" data-cand-idx="${i}" data-cand-kind="market">${(c.formations || []).join(' / ')}</span>
           <span style="font-size:.8rem;color:${fit.color};font-weight:600">${fit.text}</span>
           <span class="mm-salary-tag">💼 ${formatMoneyK(annualSalary(getDisplaySalary(c.strength)))}€/anno</span>
           <span class="mm-from-tag">da ${fromTeam.name}</span>
@@ -6616,6 +7228,30 @@ function showManagerMarketModal(onConfirm) {
     return html;
   };
 
+  // Tab "Moduli": stesso contenuto della schermata Allenatore (showCoachDetailScreen),
+  // qui incorporato come tab del mercato invece che in un overlay a parte —
+  // formazione tipo (ignoreForma: infortunati/squalificati/fuori forma restano
+  // candidati validi, non è la formazione che scenderà davvero in campo alla
+  // prossima giornata) coi 2 moduli preferiti selezionabili.
+  const buildModuliTab = () => {
+    const coach = playerTeam.coach;
+    if (!coach) return '<p class="mm-empty">Nessun allenatore in carica: scegline uno dalla tab Panchina per vedere moduli e formazione tipo.</p>';
+    const activeFormation = pickActiveFormation(playerTeam);
+    const preferredFormations = coach.formations?.length ? [...new Set(coach.formations)] : [activeFormation];
+    if (!moduliFormation || !preferredFormations.includes(moduliFormation)) moduliFormation = activeFormation;
+    const best11 = getBest11(playerTeam.roster, moduliFormation, { ignoreForma: true });
+    const positioned = computePitchPositions(best11);
+    const formationBtn = (name) => `<button type="button" class="mm-seg${moduliFormation === name ? ' active' : ''}" data-moduli-formation="${name}">${name}${name === activeFormation ? ' ⭐' : ''}</button>`;
+    const viewBtn = (val, label) => `<button type="button" class="mm-seg${moduliView === val ? ' active' : ''}" data-moduli-view="${val}">${label}</button>`;
+    const body = moduliView === 'modulo' ? buildCoachScreenPitchHtml(positioned) : buildCoachScreenBest11ListHtml(best11, false);
+    return `<div class="moduli-tab-wrap">
+      <p style="font-size:.85rem;color:#557;margin:0 2px 10px">Moduli preferiti di <strong>${coach.firstName} ${coach.lastName}</strong>: <strong>${(coach.formations || []).join(' / ') || activeFormation}</strong> — in campo: <strong>${activeFormation}</strong></p>
+      ${preferredFormations.length > 1 ? `<div class="mm-seg-group" style="margin-bottom:8px">${preferredFormations.map(formationBtn).join('')}</div>` : ''}
+      <div class="mm-seg-group" style="margin-bottom:10px">${viewBtn('modulo', '📐 Modulo')}${viewBtn('best11', '🧮 Migliori 11')}</div>
+      <div class="coach-screen-view">${body}</div>
+    </div>`;
+  };
+
   const buildPrestitiTab = () => {
     // I tuoi giocatori si mandano in prestito dalla tab Rosa (bottone
     // "Presta" per riga) — questa tab mostra solo i prestiti in ingresso.
@@ -6643,7 +7279,7 @@ function showManagerMarketModal(onConfirm) {
       const salary = p.contract?.salary ?? getDisplaySalary(p.strength);
       const overCap = !wageCapAllows(playerTeam, salary);
       return `<div class="mm-row">
-      <div class="mm-pinfo">${formatNationality(p)}<span class="mm-name">${p.firstName} ${p.lastName}</span><span class="mm-badge role-${p.role}">${p.role}</span><span style="font-size:.78rem;color:#666">${formatSubRoles(p)}</span><span>${p.age}a</span><span>⚡${p.strength}</span><span class="mm-salary-tag">💼 ${formatMoneyK(annualSalary(salary))}€/anno</span><span class="mm-from-tag">da ${fromTeam.name}</span></div>
+      <div class="mm-pinfo">${formatNationality(p)}<span class="mm-name">${p.firstName} ${p.lastName}</span>${formatRoleBadges(p)}<span style="font-size:.78rem;color:#666">${formatSubRoles(p)}</span><span>${p.age}a</span><span>⚡${p.strength}</span><span class="mm-salary-tag">💼 ${formatMoneyK(annualSalary(salary))}€/anno</span><span class="mm-from-tag">da ${fromTeam.name}</span></div>
       <div class="mm-acts"><strong class="mm-price">Gratis</strong><button class="mm-btn mm-blue" data-action="loan-in" data-cand-idx="${i}" ${overCap ? 'disabled' : ''}>${overCap ? '🚫 Monte ingaggi' : 'Richiedi'}</button></div></div>`;
     }).join('');
     return html;
@@ -6700,7 +7336,7 @@ function showManagerMarketModal(onConfirm) {
         html += `<div class="mm-row">
           <div class="mm-pinfo">
             ${formatNationality(t)}<span class="mm-name">${t.firstName} ${t.lastName}</span>
-            <span class="mm-badge role-${t.role}">${t.role}</span>
+            ${formatRoleBadges(t)}
             <span style="font-size:.78rem;color:#666">${formatSubRoles(t)}</span>
             <span>${t.age}a</span>
             <span>⚡${t.strength}</span>
@@ -6728,7 +7364,7 @@ function showManagerMarketModal(onConfirm) {
         const overCap = !wageCapAllows(playerTeam, salary);
         const label = overCap ? '🚫 Monte ingaggi' : canAfford ? 'Acquista' : 'Fondi insuff.';
         html += `<div class="mm-row">
-          <div class="mm-pinfo">${formatNationality(p)}<span class="mm-name">${p.firstName} ${p.lastName}</span><span class="mm-badge role-${p.role}">${p.role}</span><span style="font-size:.78rem;color:#666">${formatSubRoles(p)}</span><span>${p.age}a</span><span>⚡${p.strength}</span><span class="mm-salary-tag">💼 ${formatMoneyK(annualSalary(salary))}€/anno</span><span class="mm-from-tag">da ${fromTeam.name}</span></div>
+          <div class="mm-pinfo">${formatNationality(p)}<span class="mm-name">${p.firstName} ${p.lastName}</span>${formatRoleBadges(p)}<span style="font-size:.78rem;color:#666">${formatSubRoles(p)}</span><span>${p.age}a</span><span>⚡${p.strength}</span><span class="mm-salary-tag">💼 ${formatMoneyK(annualSalary(salary))}€/anno</span><span class="mm-from-tag">da ${fromTeam.name}</span></div>
           <div class="mm-acts">
             <strong class="mm-price">${askingPrice.toFixed(1)}M€</strong>
             <button class="mm-btn mm-blue" data-action="buy-market" data-pid="${p.id}" ${(canAfford && !overCap) ? '' : 'disabled'}>
@@ -6743,7 +7379,7 @@ function showManagerMarketModal(onConfirm) {
         const salary = getDisplaySalary(p.strength); // firmando ex-novo, lo stipendio è quello di mercato attuale
         const overCap = !wageCapAllows(playerTeam, salary);
         html += `<div class="mm-row">
-          <div class="mm-pinfo">${formatNationality(p)}<span class="mm-name">${p.firstName} ${p.lastName}</span><span class="mm-badge role-${p.role}">${p.role}</span><span style="font-size:.78rem;color:#666">${formatSubRoles(p)}</span><span>${p.age}a</span><span>⚡${p.strength}</span><span class="mm-salary-tag">💼 ${formatMoneyK(annualSalary(salary))}€/anno</span><span class="mm-free-tag">Svincolato</span></div>
+          <div class="mm-pinfo">${formatNationality(p)}<span class="mm-name">${p.firstName} ${p.lastName}</span>${formatRoleBadges(p)}<span style="font-size:.78rem;color:#666">${formatSubRoles(p)}</span><span>${p.age}a</span><span>⚡${p.strength}</span><span class="mm-salary-tag">💼 ${formatMoneyK(annualSalary(salary))}€/anno</span><span class="mm-free-tag">Svincolato</span></div>
           <div class="mm-acts">
             <strong class="mm-price">Gratis</strong>
             ${overCap ? '' : durationSelectHtml('data-dur-sign', p.id)}
@@ -6763,10 +7399,11 @@ function showManagerMarketModal(onConfirm) {
   const render = (resetScroll) => {
     const tabContent = activeTab === 'rinnovi' ? buildRennoviTab()
       : activeTab === 'offerte' ? buildOfferteTab()
-      : activeTab === 'acquisti' ? buildAcquistiTab()
-      : activeTab === 'panchina' ? buildPanchinaTab()
-      : activeTab === 'prestiti' ? buildPrestitiTab()
-      : buildRosaTab();
+        : activeTab === 'acquisti' ? buildAcquistiTab()
+          : activeTab === 'prestiti' ? buildPrestitiTab()
+            : activeTab === 'panchina' ? buildPanchinaTab()
+              : activeTab === 'moduli' ? buildModuliTab()
+                : buildRosaTab();
 
     const renewPending = pendingRenewals.filter(p => !renewalDecisions.has(p.id)).length;
     const offerPending = pendingAIOffers.filter(o => !offerDecisions.has(o.player.id)).length;
@@ -6787,24 +7424,25 @@ function showManagerMarketModal(onConfirm) {
         </div>
         ${buildBudgetSliderHtml(playerTeam)}
         <div class="mm-tabs">
-          <button class="mm-tab${activeTab==='rinnovi'?' active':''}" data-tab="rinnovi">
+          <button class="mm-tab${activeTab === 'rinnovi' ? ' active' : ''}" data-tab="rinnovi">
             Rinnovi ${renewPending > 0 ? `<span class="mm-badge-count">${renewPending}</span>` : ''}
           </button>
-          <button class="mm-tab${activeTab==='offerte'?' active':''}" data-tab="offerte">
+          <button class="mm-tab${activeTab === 'offerte' ? ' active' : ''}" data-tab="offerte">
             Offerte ricevute ${offerPending > 0 ? `<span class="mm-badge-count">${offerPending}</span>` : ''}
           </button>
-          <button class="mm-tab${activeTab==='acquisti'?' active':''}" data-tab="acquisti">Acquisti${pendingForeignScoutTargets.length > 0 ? ` <span class="mm-badge-count" style="background:#f59e0b">${pendingForeignScoutTargets.length}</span>` : ''}</button>
-          <button class="mm-tab${activeTab==='panchina'?' active':''}" data-tab="panchina">
-            Panchina ${needsCoach ? '<span class="mm-badge-count" style="background:#ef4444">!</span>' : ''}
-          </button>
-          <button class="mm-tab${activeTab==='prestiti'?' active':''}" data-tab="prestiti">
+          <button class="mm-tab${activeTab === 'acquisti' ? ' active' : ''}" data-tab="acquisti">Acquisti${pendingForeignScoutTargets.length > 0 ? ` <span class="mm-badge-count" style="background:#f59e0b">${pendingForeignScoutTargets.length}</span>` : ''}</button>
+          <button class="mm-tab${activeTab === 'prestiti' ? ' active' : ''}" data-tab="prestiti">
             Prestiti <span class="mm-badge-count" style="background:#64748b">${getIncomingLoanCount(playerTeam)}/${MAX_INCOMING_LOANS}</span>
           </button>
-          <button class="mm-tab${activeTab==='rosa'?' active':''}" data-tab="rosa">Rosa (${(() => {
-            const leaving = new Set(pendingRenewals.filter(p => !renewalDecisions.has(p.id)).map(p => p.id));
-            const myPreContracts = pendingPreContracts.filter(pc => !pc.toTeam || pc.toTeam === playerTeam).length;
-            return playerTeam.roster.filter(p => !leaving.has(p.id)).length + myPreContracts;
-          })()})</button>
+          <button class="mm-tab${activeTab === 'panchina' ? ' active' : ''}" data-tab="panchina">
+            Panchina ${needsCoach ? '<span class="mm-badge-count" style="background:#ef4444">!</span>' : ''}
+          </button>
+          <button class="mm-tab${activeTab === 'moduli' ? ' active' : ''}" data-tab="moduli">Moduli</button>
+          <button class="mm-tab${activeTab === 'rosa' ? ' active' : ''}" data-tab="rosa">Rosa (${(() => {
+        const leaving = new Set(pendingRenewals.filter(p => !renewalDecisions.has(p.id)).map(p => p.id));
+        const myPreContracts = pendingPreContracts.filter(pc => !pc.toTeam || pc.toTeam === playerTeam).length;
+        return playerTeam.roster.filter(p => !leaving.has(p.id)).length + myPreContracts;
+      })()})</button>
         </div>
         <div class="mm-content">${tabContent}</div>
         <div class="mm-footer">
@@ -6823,6 +7461,12 @@ function showManagerMarketModal(onConfirm) {
     wireBudgetSlider(overlay, playerTeam, render);
     overlay.querySelectorAll('[data-coach-avail]').forEach(btn =>
       btn.addEventListener('click', () => { coachAvail = btn.dataset.coachAvail; render(); })
+    );
+    overlay.querySelectorAll('[data-moduli-view]').forEach(btn =>
+      btn.addEventListener('click', () => { moduliView = btn.dataset.moduliView; render(); })
+    );
+    overlay.querySelectorAll('[data-moduli-formation]').forEach(btn =>
+      btn.addEventListener('click', () => { moduliFormation = btn.dataset.moduliFormation; render(); })
     );
 
     overlay.querySelectorAll('tr[data-player-id]').forEach(tr => {
@@ -6848,7 +7492,7 @@ function showManagerMarketModal(onConfirm) {
             if (wageCapAllows(playerTeam, demanded, current)) {
               if (!p.contract) p.contract = createContract(p.strength, p.age);
               const years = +(overlay.querySelector(`select[data-dur-renew="${id}"]`)?.value) || 3;
-              p.contract.salary   = demanded;
+              p.contract.salary = demanded;
               p.contract.duration = years;
               transferLog.push(`📋 <em>${p.firstName} ${p.lastName}</em> rinnova con <strong>${playerTeam.name}</strong> — ${p.contract.duration} anni, ${formatMoneyK(annualSalary(demanded))}€/anno`);
               renewalDecisions.set(id, 'renewed');
@@ -6931,6 +7575,11 @@ function showManagerMarketModal(onConfirm) {
             playerTeam.coach = null;
             transferLog.push(`🚨 <strong>${playerTeam.name}</strong> esonera <em>${coach.firstName} ${coach.lastName}</em> — buonuscita: ${severance.toFixed(1)}M€`);
           }
+        } else if (action === 'view-coach-formations') {
+          const candIdx = +btn.dataset.candIdx;
+          const candKind = btn.dataset.candKind;
+          const coach = candKind === 'market' ? coachBuyCandidates[candIdx]?.coach : coachCandidates[candIdx];
+          if (coach) showCoachFormationsPreview(coach);
         } else if (action === 'hire-coach') {
           const candIdx = +btn.dataset.candIdx;
           const coach = coachCandidates[candIdx];
@@ -6940,7 +7589,7 @@ function showManagerMarketModal(onConfirm) {
             const years = +(overlay.querySelector(`select[data-dur-hire="${candIdx}"]`)?.value) || 3;
             coach.contract = createCoachContract(coach, years);
             playerTeam.coach = coach;
-            transferLog.push(`✅ <strong>${playerTeam.name}</strong> ingaggia l'allenatore <em>${coach.firstName} ${coach.lastName}</em> (Forza: ${coach.strength}, ${coach.formation}) — contratto ${years} anni`);
+            transferLog.push(`✅ <strong>${playerTeam.name}</strong> ingaggia l'allenatore <em>${coach.firstName} ${coach.lastName}</em> (Forza: ${coach.strength}, ${(coach.formations || []).join(' / ')}) — contratto ${years} anni`);
           }
         } else if (action === 'hire-emerging') {
           if (displaceCurrentCoach()) {
@@ -6948,7 +7597,7 @@ function showManagerMarketModal(onConfirm) {
             const coach = createCoach(playerTeam);
             coach.contract = createCoachContract(coach, years);
             playerTeam.coach = coach;
-            transferLog.push(`🌱 <strong>${playerTeam.name}</strong> promuove un emergente in panchina: <em>${coach.firstName} ${coach.lastName}</em> (Forza: ${coach.strength}, ${coach.formation}) — contratto ${years} anni`);
+            transferLog.push(`🌱 <strong>${playerTeam.name}</strong> promuove un emergente in panchina: <em>${coach.firstName} ${coach.lastName}</em> (Forza: ${coach.strength}, ${(coach.formations || []).join(' / ')}) — contratto ${years} anni`);
           }
         } else if (action === 'buy-coach') {
           const candIdx = +btn.dataset.candIdx;
@@ -6966,7 +7615,7 @@ function showManagerMarketModal(onConfirm) {
               const years = +(overlay.querySelector(`select[data-dur-buy-coach="${candIdx}"]`)?.value) || 3;
               coach.contract = createCoachContract(coach, years);
               playerTeam.coach = coach;
-              transferLog.push(`🛒 <strong>${playerTeam.name}</strong> acquista l'allenatore <em>${coach.firstName} ${coach.lastName}</em> da <strong>${fromTeam.name}</strong> per <strong>${price.toFixed(1)}M€</strong> (Forza: ${coach.strength}, ${coach.formation}) — contratto ${years} anni`);
+              transferLog.push(`🛒 <strong>${playerTeam.name}</strong> acquista l'allenatore <em>${coach.firstName} ${coach.lastName}</em> da <strong>${fromTeam.name}</strong> per <strong>${price.toFixed(1)}M€</strong> (Forza: ${coach.strength}, ${(coach.formations || []).join(' / ')}) — contratto ${years} anni`);
 
               // Domino di mercato: la squadra appena rimasta senza allenatore
               // ne ingaggia SUBITO uno nuovo (stessa logica di fine stagione

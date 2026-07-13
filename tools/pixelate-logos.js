@@ -67,8 +67,29 @@ async function pixelateImage(fileUrl, maxGridW, maxGridH, palette, bgTolerance, 
   };
   const dist = (a, b) => Math.sqrt((a[0]-b[0])**2 + (a[1]-b[1])**2 + (a[2]-b[2])**2);
 
+  // bgRef (il colore da trattare come "sfondo da rimuovere") si fida dei 4
+  // angoli SOLO quando sono TUTTI opachi e concordi tra loro — quello è il
+  // solo caso in cui i 4 angoli indicano davvero una cornice di sfondo
+  // uniforme (es. bianco pieno intorno allo stemma, come Sampdoria).
+  // In ogni altro caso NON si calcola nessun bgRef (il flood-fill si affida
+  // solo al canale alpha, isBg = c[3] < 10):
+  //  - 4 angoli trasparenti (alpha 0 → RGB azzerati "finti"): includerli in
+  //    una media farebbe collassare bgRef sul nero per qualunque sorgente
+  //    che ha GIÀ lo sfondo trasparente, scambiando per "sfondo" ogni
+  //    tratto/riempimento nero del disegno — bug riscontrato su Milan/Cesena.
+  //  - angoli MISTI (alcuni opachi, altri trasparenti): capita quando lo
+  //    stemma è già ritagliato a filo immagine e il suo stesso contorno
+  //    tocca il bordo della tela (es. Palermo/Cremonese/Parma, dove gli
+  //    angoli in alto cadono sul bordo colorato dello stemma, non su un
+  //    vero sfondo) — usare quel colore come bgRef cancella il contorno
+  //    stesso invece dello sfondo (era la regressione introdotta dal primo
+  //    fix "solo angoli opachi").
   const corners = [colorAt(0,0), colorAt(W-1,0), colorAt(0,H-1), colorAt(W-1,H-1)];
-  const bgRef = [0,1,2].map(c => corners.reduce((s,p)=>s+p[c],0)/4);
+  const allOpaque = corners.every(c => c[3] >= 10);
+  const cornersAgree = allOpaque && corners.every(c => dist(c, corners[0]) < 30);
+  const bgRef = cornersAgree
+    ? [0,1,2].map(c => corners.reduce((s,p)=>s+p[c],0)/4)
+    : null;
   const visited = new Uint8Array(W * H);
   const queue = [];
   for (let x = 0; x < W; x++) { queue.push([x, 0]); queue.push([x, H - 1]); }
@@ -80,7 +101,7 @@ async function pixelateImage(fileUrl, maxGridW, maxGridH, palette, bgTolerance, 
     const i = idx(x, y);
     if (visited[i]) continue;
     const c = colorAt(x, y);
-    const isBg = c[3] < 10 || dist(c, bgRef) < bgTolerance;
+    const isBg = c[3] < 10 || (bgRef !== null && dist(c, bgRef) < bgTolerance);
     if (!isBg) { visited[i] = 1; continue; }
     visited[i] = 1;
     bgMask[i] = 1;

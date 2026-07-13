@@ -626,6 +626,14 @@ details[open] summary::after {
     vertical-align: middle;
     cursor: default;
 }
+.trophy-icon {
+    display: inline-block;
+    height: 1.1em;
+    width: auto;
+    object-fit: contain;
+    vertical-align: -0.2em;
+    cursor: default;
+}
 
 /* Scheda giocatore */
 .player-card-overlay {
@@ -642,7 +650,7 @@ details[open] summary::after {
     background: var(--bg-default);
     border-radius: var(--radius-2xl);
     padding: 24px 28px;
-    min-width: 380px; max-width: 560px; width: 90%;
+    min-width: 420px; max-width: 620px; width: 90%;
     max-height: 85vh;
     box-sizing: border-box;
     position: relative;
@@ -652,7 +660,7 @@ details[open] summary::after {
 }
 .player-card-scroll { overflow-y: auto; padding-right: 4px; }
 .player-card-close {
-    position: absolute; top: 12px; right: 14px;
+    position: absolute; top: 12px; right: 5px;
     background: none; border: none; font-size: 1.2rem;
     cursor: pointer; color: var(--text-secondary);
 }
@@ -667,14 +675,48 @@ details[open] summary::after {
     padding: 2px 8px; border-radius: var(--radius-sm); font-size: 0.85rem; font-weight: var(--font-semi);
 }
 
-/* ── Colori per ruolo: POR/DIF/CEN/ATT ─────────────────────────────────────
-   Applicati a .mm-badge, .md-role-badge, .player-card-role tramite classe
-   aggiuntiva .role-XXX. Selettori composti (2 classi) per vincere sempre
-   sulla regola base, indipendentemente dall'ordine nel foglio di stile. */
-.mm-badge.role-POR, .md-role-badge.role-POR, .player-card-role.role-POR { background: #fef3c7; color: #92400e; }
-.mm-badge.role-DIF, .md-role-badge.role-DIF, .player-card-role.role-DIF { background: #dbeafe; color: #1d4ed8; }
-.mm-badge.role-CEN, .md-role-badge.role-CEN, .player-card-role.role-CEN { background: #dcfce7; color: #15803d; }
-.mm-badge.role-ATT, .md-role-badge.role-ATT, .player-card-role.role-ATT { background: #fee2e2; color: #b91c1c; }
+/* ── Colori per ruolo: 9 ruoli raggruppati per zona (POR/DIF/CEN/ATT) ──────
+   Applicati a .mm-badge, .md-role-badge, .player-card-role, .role-chip,
+   .role-chip-text tramite classe aggiuntiva .role-XXX (XXX = uno dei 9
+   ruoli, vedi ROLE_ZONE in main.js). Selettori composti (2 classi) per
+   vincere sempre sulla regola base, indipendentemente dall'ordine nel
+   foglio di stile. */
+.mm-badge.role-POR, .md-role-badge.role-POR, .player-card-role.role-POR,
+.role-chip.role-POR, .role-chip-text.role-POR { background: #fef3c7; color: #92400e; }
+.mm-badge.role-DIF, .md-role-badge.role-DIF, .player-card-role.role-DIF,
+.mm-badge.role-TER, .md-role-badge.role-TER, .player-card-role.role-TER,
+.role-chip.role-DIF, .role-chip-text.role-DIF,
+.role-chip.role-TER, .role-chip-text.role-TER { background: #dbeafe; color: #1d4ed8; }
+.mm-badge.role-CEN, .md-role-badge.role-CEN, .player-card-role.role-CEN,
+.mm-badge.role-MED, .md-role-badge.role-MED, .player-card-role.role-MED,
+.mm-badge.role-EST, .md-role-badge.role-EST, .player-card-role.role-EST,
+.mm-badge.role-TRQ, .md-role-badge.role-TRQ, .player-card-role.role-TRQ,
+.role-chip.role-CEN, .role-chip-text.role-CEN,
+.role-chip.role-MED, .role-chip-text.role-MED,
+.role-chip.role-EST, .role-chip-text.role-EST,
+.role-chip.role-TRQ, .role-chip-text.role-TRQ { background: #dcfce7; color: #15803d; }
+.mm-badge.role-ATT, .md-role-badge.role-ATT, .player-card-role.role-ATT,
+.mm-badge.role-ALA, .md-role-badge.role-ALA, .player-card-role.role-ALA,
+.role-chip.role-ATT, .role-chip-text.role-ATT,
+.role-chip.role-ALA, .role-chip-text.role-ALA { background: #fee2e2; color: #b91c1c; }
+
+/* .role-chip: badge piccolo colorato (colonna RUOLO in Database/Rosa, uno
+   per ogni ruolo del giocatore, doppio ruolo compreso).
+   .role-chip-text: stesso colore ma senza sfondo, solo testo (colonna
+   POSIZIONE, per distinguere a colpo d'occhio quale posizione appartiene a
+   quale ruolo senza appesantire la cella con pillole piene). */
+.role-chip {
+  display: inline-block;
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 0.72rem;
+  font-weight: var(--font-bold);
+  margin-right: 2px;
+}
+.role-chip-text {
+  background: none !important;
+  font-weight: 600;
+}
 .player-card-stats {
     display: flex; gap: 18px; margin-bottom: 16px;
     font-size: var(--text-md); color: #444;
@@ -1136,3 +1178,88 @@ details[open] summary::after {
   color: var(--bg-default); font-size: 1rem; box-sizing: border-box;
 }
 .career-name-form input:focus { outline: none; border-color: #5599ee; }
+
+/* Tab "Moduli" dentro le finestre di mercato (mm-box, largo fino a 1060px):
+   senza un tetto il campo pixel art si stira su tutta quella larghezza — lo
+   limitiamo (un po' più piccolo della schermata Allenatore standalone,
+   che è a 440px) e lo centriamo nella finestra invece di lasciarlo
+   allineato a sinistra. */
+.moduli-tab-wrap {
+  max-width: 360px;
+  margin: 0 auto;
+}
+/* ── Schermata Allenatore: campo pixel art con la formazione attiva ──────── */
+.coach-screen-box {
+  /* +44px (il padding orizzontale di coach-screen-body sotto) così il campo
+     pixel art mantiene la stessa larghezza/dettaglio di prima del padding,
+     invece di rimpicciolirsi e perdere nitidezza nei contorni. */
+  max-width: 484px !important;
+}
+/* Contenuto sotto l'header: padding proprio (l'header ha il suo, coach-screen-box
+   di per sé non ne ha nessuno). */
+.coach-screen-body {
+  padding: 18px 22px 20px;
+  overflow-y: auto;
+}
+/* Altezza minima pari a quella del campo (vista "Modulo"): la vista
+   "Migliori 11" (una lista di righe, molto più bassa) non deve far
+   rimpicciolire la finestra quando si passa dall'una all'altra. */
+.coach-screen-view {
+  min-height: 530px;
+}
+.pitch-container {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 672 / 880; /* proporzioni reali di assets/pitch/formation.BMP */
+  overflow: hidden;
+}
+.pitch-bg {
+  width: 100%; height: 100%; object-fit: cover;
+  /* NON pixelated: l'immagine nativa (672x880) viene sempre RIMPICCIOLITA
+     per entrare nella finestra, mai ingrandita — col filtro "pixelated"
+     (nearest-neighbor) il downscale può saltare del tutto righe sottili da
+     1px come la linea di porta o il limite dell'area piccola, facendole
+     sparire. Lo scaling smooth (default) le sfuma invece di cancellarle. */
+  display: block;
+}
+.pitch-dot-wrap {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: flex; flex-direction: column; align-items: center;
+  gap: 1px;
+  pointer-events: none; /* il tooltip nativo (title) basta, niente click-through sul campo */
+}
+.pitch-dot {
+  width: 22px; height: 22px;
+  filter: drop-shadow(0 0 1px rgba(0,0,0,.8)) drop-shadow(0 0 1px rgba(0,0,0,.8));
+}
+.pitch-dot svg { width: 100%; height: 100%; shape-rendering: crispEdges; }
+/* Colore del pallino = zona (riusa gli stessi colori di .role-POR/DIF/CEN/ATT,
+   qui la variante "testo" più satura, più leggibile come riempimento pieno
+   sopra il verde del campo rispetto al pastello di sfondo dei badge). */
+.pitch-dot-wrap.zone-POR .pitch-dot { color: #92400e; }
+.pitch-dot-wrap.zone-DIF .pitch-dot { color: #1d4ed8; }
+.pitch-dot-wrap.zone-CEN .pitch-dot { color: #15803d; }
+.pitch-dot-wrap.zone-ATT .pitch-dot { color: #b91c1c; }
+/* Fuori posizione/ruolo: stesso principio della finestra partita (arancione/
+   rosso), qui come bordo attorno al pallino invece che colore del testo. */
+.pitch-dot.pitch-dot-oop { filter: drop-shadow(0 0 2px #a15c00) drop-shadow(0 0 2px #a15c00); }
+.pitch-dot.pitch-dot-oor { filter: drop-shadow(0 0 2px #b91c1c) drop-shadow(0 0 2px #b91c1c); }
+.pitch-dot-role {
+  font-size: .62rem; font-weight: 800; color: #fff;
+  text-shadow: 0 0 2px #000, 0 0 2px #000, 1px 1px 0 #000;
+  line-height: 1;
+}
+.pitch-dot-pos {
+  font-size: .56rem; color: #fff;
+  text-shadow: 0 0 2px #000, 0 0 2px #000, 1px 1px 0 #000;
+  white-space: nowrap;
+  line-height: 1;
+}
+/* Vista "Migliori 11" (lista testuale, alternativa al campo grafico) */
+.coach-best11-list {
+  display: flex; flex-direction: column; gap: 2px;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-lg);
+  padding: 8px 10px;
+}
