@@ -466,11 +466,16 @@ const ROLE_ZONE = {
 
 // Le 10 coppie di doppio ruolo valide (adiacenza tattica) — un giocatore può
 // avere come ruolo secondario SOLO uno di questi, mai un ruolo a caso.
-const ROLE_PAIRS = new Set([
-  'DIF|TER', 'TER|EST', 'DIF|MED', 'MED|CEN', 'EST|CEN',
-  'EST|ALA', 'CEN|TRQ', 'ALA|TRQ', 'TRQ|ATT', 'ALA|ATT',
-]);
 function pairKey(r1, r2) { return [r1, r2].sort().join('|'); }
+// Costruito via pairKey() (non stringhe scritte a mano) così l'ordine con cui
+// si elenca ogni coppia qui sotto non conta mai: prima erano alcune scritte
+// in ordine non alfabetico (es. 'TER|EST') e arePairedRoles, che normalizza
+// SEMPRE alfabeticamente in lookup, non le trovava mai — TER/EST, EST/ALA,
+// EST/CEN, MED/CEN, TRQ/ATT risultavano di fatto irraggiungibili come doppio ruolo.
+const ROLE_PAIRS = new Set([
+  ['DIF', 'TER'], ['TER', 'EST'], ['DIF', 'MED'], ['MED', 'CEN'], ['EST', 'CEN'],
+  ['EST', 'ALA'], ['CEN', 'TRQ'], ['ALA', 'TRQ'], ['TRQ', 'ATT'], ['ALA', 'ATT'],
+].map(([a, b]) => pairKey(a, b)));
 function arePairedRoles(r1, r2) { return ROLE_PAIRS.has(pairKey(r1, r2)); }
 
 // Genera 1 o 2 posizioni per un ruolo (stessa probabilità 70/30 specialista/
@@ -601,6 +606,11 @@ function trophyIconHtml(type, label) {
   return `<img class="trophy-icon" src="assets/coppe/${TROPHY_FILES[type]}" title="${label}" alt="${label}">`;
 }
 
+const PROMO_RELEG_FILES = { promozione: 'promozione.webp', retrocessione: 'retrocessione.webp' };
+function promoRelegIconHtml(type, label) {
+  return `<img class="trophy-icon" src="assets/icone/${PROMO_RELEG_FILES[type]}" title="${label}" alt="${label}">`;
+}
+
 // Forza massima acquistabile per lega: A=nessun limite, B<=80, C<=60
 function leagueStrCap(leagueLevel) {
   return leagueLevel === 'C' ? 60 : leagueLevel === 'B' ? 80 : 100;
@@ -620,15 +630,19 @@ function neededRoles(team) { return Object.keys(ROLE_MIN).filter(r => roleCount(
 // Per il giocatore umano SOLO (la CPU continua a usare ROLE_MIN/ROLE_MAX
 // via canAddRole/neededRoles, invariati): nessun vincolo per ruolo su
 // vendite/prestiti in uscita/acquisti. Può vendere fino a restare senza
-// rosa; può arrivare a un massimo di 30 giocatori totali, prestiti in uscita
-// compresi. Non può chiudere una sessione di mercato (e quindi avanzare nel
-// gioco) finché non ha almeno 16 giocatori — sostituisce il vecchio
-// riempimento automatico (ensureMinRoster), che resta per la CPU ma non
-// più per il giocatore.
+// rosa; può arrivare a un massimo di 30 giocatori DI PROPRIETÀ (netto dei
+// prestiti in entrata, che non sono suoi: contano invece i prestiti in
+// uscita, che restano suoi anche se altrove) — dato che fino a
+// MAX_INCOMING_LOANS (8) giocatori in prestito possono aggiungersi sopra
+// questo tetto, la lista fisicamente in rosa può arrivare al massimo a
+// 30 + 8 = 38 giocatori. Non può chiudere una sessione di mercato (e
+// quindi avanzare nel gioco) finché non ha almeno 16 giocatori —
+// sostituisce il vecchio riempimento automatico (ensureMinRoster), che
+// resta per la CPU ma non più per il giocatore.
 const PLAYER_ROSTER_MAX = 30;
 const PLAYER_ROSTER_MIN_TO_PROCEED = 16;
 function getEffectiveRosterCount(team) {
-  return team.roster.length + activeLoans.filter(l => l.homeTeam === team).length;
+  return team.roster.length - getIncomingLoanCount(team) + activeLoans.filter(l => l.homeTeam === team).length;
 }
 function canPlayerSignMore(team) {
   return getEffectiveRosterCount(team) < PLAYER_ROSTER_MAX;
@@ -846,7 +860,7 @@ function formatFormationRequirements(formationName) {
 function generateStaffStrength(team, spread) {
   const variance = Math.floor(Math.random() * (2 * spread + 1)) - spread; // -spread .. +spread
   const cap = leagueStrCap(team.leagueLevel); // stesso tetto per lega usato per i giocatori (C:60, B:80, A:100)
-  return Math.max(25, Math.min(cap, Math.round((team.strength || 50) + variance)));
+  return Math.max(40, Math.min(cap, Math.round((team.strength || 50) + variance)));
 }
 
 // Contratto di un allenatore: stessa logica a scaglioni degli stipendi
@@ -881,6 +895,35 @@ function createDirector(team) {
   return { firstName, lastName, age, strength, maxStrength, history: [] };
 }
 
+// Forza di un allenatore/DS "libero" fin dall'inizio partita, NON legato a
+// nessuna squadra — a differenza di generateStaffStrength (ancorata alla
+// forza di un club specifico), copre l'intero ventaglio 40-100 in modo
+// uniforme, così il pool di svincolati iniziale ha davvero di tutto (dai
+// mestieranti agli allenatori da grande squadra).
+function generateFreeStaffStrength() {
+  return 40 + Math.floor(Math.random() * 61); // 40-100
+}
+function createFreeCoach() {
+  const firstName = ITALIAN_FIRST_NAMES[Math.floor(Math.random() * ITALIAN_FIRST_NAMES.length)];
+  const lastName = ITALIAN_LAST_NAMES[Math.floor(Math.random() * ITALIAN_LAST_NAMES.length)];
+  const age = 38 + Math.floor(Math.random() * 20);
+  const strength = generateFreeStaffStrength();
+  const maxStrength = Math.min(100, strength + 10 + Math.floor(Math.random() * 35)); // +10 a +45
+  const formations = [
+    FORMATION_NAMES[Math.floor(Math.random() * FORMATION_NAMES.length)],
+    FORMATION_NAMES[Math.floor(Math.random() * FORMATION_NAMES.length)],
+  ];
+  return { firstName, lastName, age, strength, maxStrength, formations, history: [] };
+}
+function createFreeDirector() {
+  const firstName = ITALIAN_FIRST_NAMES[Math.floor(Math.random() * ITALIAN_FIRST_NAMES.length)];
+  const lastName = ITALIAN_LAST_NAMES[Math.floor(Math.random() * ITALIAN_LAST_NAMES.length)];
+  const age = 38 + Math.floor(Math.random() * 20);
+  const strength = generateFreeStaffStrength();
+  const maxStrength = Math.min(100, strength + 10 + Math.floor(Math.random() * 35)); // +10 a +45
+  return { firstName, lastName, age, strength, maxStrength, history: [] };
+}
+
 // Il presidente fissa budget trasferimenti e monte ingaggi; non gioca mai lui stesso
 function createPresident(team) {
   const firstName = ITALIAN_FIRST_NAMES[Math.floor(Math.random() * ITALIAN_FIRST_NAMES.length)];
@@ -900,14 +943,14 @@ function ageProgressCoach(coach) {
   else if (coach.age < 50) delta = 1 + Math.floor(Math.random() * 2); // 40-49: +1/+2 (carriera in crescita)
   else if (coach.age < 60) delta = Math.floor(Math.random() * 2); // 50-59: 0/+1
   else delta = -(1 + Math.floor(Math.random() * 3));               // 60-70: -1/-3
-  coach.strength = Math.max(30, Math.min(coach.maxStrength || 100, coach.strength + delta));
+  coach.strength = Math.max(40, Math.min(coach.maxStrength || 100, coach.strength + delta));
   coach.age++;
 }
 
 function retiredPlayerToStaff(player) {
   // Un campione (str alta) diventa staff di qualità; ratio più alto per le stelle
   const ratio = player.strength >= 80 ? 0.70 : player.strength >= 60 ? 0.62 : 0.55;
-  const strength = Math.max(30, Math.min(95, Math.round(player.strength * ratio + Math.random() * 15 - 5)));
+  const strength = Math.max(40, Math.min(95, Math.round(player.strength * ratio + Math.random() * 15 - 5)));
   const maxStrength = Math.min(100, strength + 15 + Math.floor(Math.random() * 30)); // +15 a +45
   const formations = [
     FORMATION_NAMES[Math.floor(Math.random() * FORMATION_NAMES.length)],
@@ -1095,11 +1138,16 @@ function pickActiveFormation(team) {
 // (gli 11 migliori successivi, sempre per modulo) — usata sia per calcolare
 // l'esubero (getSquadSurplus) sia per dare priorità al rinnovo anticipato dei
 // giocatori più importanti (STEP 1d).
+// ignoreForma: chi è titolare/riserva/esubero è una questione di RUOLO E
+// ABILITÀ nella rosa, non di quanto uno è stanco questa settimana — senza
+// questo, un titolare vero ma temporaneamente poco in forma finiva
+// scambiato per esubero e proposto in vendita/prestito (la forma torna su
+// da sola, non è un motivo per giudicare il valore di un giocatore).
 function getSquadTiers(team) {
   const formation = pickActiveFormation(team);
-  const starters = new Set(getBest11(team.roster, formation).map(e => e.player));
+  const starters = new Set(getBest11(team.roster, formation, { ignoreForma: true }).map(e => e.player));
   const rest = team.roster.filter(p => !starters.has(p));
-  const reserves = new Set(getBest11(rest, formation).map(e => e.player));
+  const reserves = new Set(getBest11(rest, formation, { ignoreForma: true }).map(e => e.player));
   return { starters, reserves };
 }
 
@@ -1128,7 +1176,10 @@ function getSquadSurplus(team) {
 // per severity decrescente. Pura, nessuna mutazione della rosa.
 function getTeamNeeds(team) {
   const formation = pickActiveFormation(team);
-  const best11 = getBest11(team.roster, formation);
+  // ignoreForma: stesso motivo di getSquadTiers — il mercato CPU deve
+  // ragionare su bisogni di ABILITÀ/ruolo strutturali, non su chi è
+  // temporaneamente stanco questa settimana.
+  const best11 = getBest11(team.roster, formation, { ignoreForma: true });
   const { reserves } = getSquadTiers(team);
   const reserveList = [...reserves];
   const needs = [];
@@ -1148,9 +1199,12 @@ function getTeamNeeds(team) {
     const starterEntries = best11.filter(e => e.player.role === role);
     if (!starterEntries.length) return;
     const reserveEntries = reserveList.filter(p => p.role === role);
-    const avgStarter = starterEntries.reduce((s, e) => s + getPlayerEffectiveStrength(e.player), 0) / starterEntries.length;
+    // Forza grezza (fit-pesata, non forma-pesata) — stesso motivo di sopra:
+    // il confronto titolari/riserve non deve dipendere da chi è più stanco
+    // in questo momento.
+    const avgStarter = starterEntries.reduce((s, e) => s + e.player.strength * FIT_STRENGTH_MULT[e.fit], 0) / starterEntries.length;
     const avgReserve = reserveEntries.length
-      ? reserveEntries.reduce((s, p) => s + getPlayerEffectiveStrength(p), 0) / reserveEntries.length
+      ? reserveEntries.reduce((s, p) => s + p.strength, 0) / reserveEntries.length
       : 0;
     if (avgReserve < avgStarter * 0.70) {
       needs.push({ role, subRole: null, fit: null, severity: reserveEntries.length ? 15 : 25, incumbent: null, isReserveGap: true });
@@ -1754,6 +1808,14 @@ serieC.forEach(t => { t.leagueLevel = 'C'; });
 
 // Assegna allenatore, DS e presidente iniziali a ogni squadra
 [...serieA, ...serieB, ...serieC].forEach(t => { t.coach = createCoach(t); t.ds = createDirector(t); t.president = createPresident(t); });
+
+// Pool iniziale di allenatori/DS svincolati, oltre ai 60 già assegnati alle
+// squadre — fin dall'inizio partita, non solo quelli che via via si liberano
+// nel corso delle stagioni, così mercato/svincolati/carriera DS hanno subito
+// un ventaglio ampio di forze tra cui scegliere.
+const FREE_STAFF_POOL_SIZE = 300;
+while (freeCoaches.length < FREE_STAFF_POOL_SIZE) freeCoaches.push(createFreeCoach());
+while (freeDirectors.length < FREE_STAFF_POOL_SIZE) freeDirectors.push(createFreeDirector());
 
 function generateRoundRobin(teams) {
   if (teams.length % 2 !== 0) {
@@ -2436,7 +2498,7 @@ function displayStandings(containerId, standingsData, halfSeason = false) {
   // Creazione della tabella
   const table = document.createElement('table');
   table.className = 'standings-table';
-  table.innerHTML = '<tr><th>Squadra</th><th>Punti</th><th>Giornate</th><th>V</th><th>P</th><th>S</th><th>GF</th><th>GS</th><th>Diff. reti</th></tr>';
+  table.innerHTML = '<tr><th class="col-standings-icon"></th><th class="col-standings-pos">Pos.</th><th>Squadra</th><th>Punti</th><th>Giornate</th><th>V</th><th>P</th><th>S</th><th>GF</th><th>GS</th><th>Diff. reti</th></tr>';
 
   standingsArray.forEach((team, index) => {
     const row = table.insertRow();
@@ -2462,10 +2524,22 @@ function displayStandings(containerId, standingsData, halfSeason = false) {
       row.classList.add('relegation-zone');
     }
 
+    // Colonna icona: scudetto per il 1° posto di A, retrocessione per le
+    // ultime 4 di A/B/C, promozione per le prime 4 di B/C (in A il 1° posto
+    // ha già lo scudetto, non serve anche l'icona promozione).
+    let posIconHtml = '';
+    if (containerId === 'serieA' && index === 0) {
+      posIconHtml = trophyIconHtml('scudetto', 'Scudetto');
+    } else if (index >= standingsArray.length - 4) {
+      posIconHtml = promoRelegIconHtml('retrocessione', 'Retrocessione');
+    } else if (containerId !== 'serieA' && index < 4) {
+      posIconHtml = promoRelegIconHtml('promozione', 'Promozione');
+    }
+
     const played = (team.wins || 0) + (team.draws || 0) + (team.losses || 0);
     const goalDiff = (team.goalsFor || 0) - (team.goalsAgainst || 0);
     const goalDiffLabel = goalDiff > 0 ? `+${goalDiff}` : `${goalDiff}`;
-    row.innerHTML = `<td>${teamCellContent}</td><td>${team.points}</td><td>${played}</td><td>${team.wins || 0}</td><td>${team.draws || 0}</td><td>${team.losses || 0}</td><td>${team.goalsFor || 0}</td><td>${team.goalsAgainst || 0}</td><td>${goalDiffLabel}</td>`;
+    row.innerHTML = `<td class="col-standings-icon">${posIconHtml}</td><td class="col-standings-pos">${index + 1}.</td><td>${teamCellContent}</td><td>${team.points}</td><td>${played}</td><td>${team.wins || 0}</td><td>${team.draws || 0}</td><td>${team.losses || 0}</td><td>${team.goalsFor || 0}</td><td>${team.goalsAgainst || 0}</td><td>${goalDiffLabel}</td>`;
   });
 
   standingsDiv.appendChild(table);
@@ -2711,7 +2785,17 @@ function showTeamDetailsModal(teamName) {
   const modalBody = document.getElementById('modal-body');
 
   const render = () => {
-    const roster = team.roster || [];
+    // Prestiti: chi è ospitato da questo club (in prestito dal club d'origine)
+    // resta nel roster normale, chi è stato ceduto in prestito altrove è
+    // fisicamente uscito dal roster — lo riaggiungiamo qui solo per mostrarlo
+    // (il club resta comunque proprietario finché il prestito non si risolve).
+    const loanedInTeamById = new Map(
+      activeLoans.filter(l => l.loanTeam === team).map(l => [l.player.id, l.homeTeam.name])
+    );
+    const outgoingLoans = activeLoans.filter(l => l.homeTeam === team);
+    const outgoingLoanTeamById = new Map(outgoingLoans.map(l => [l.player.id, l.loanTeam.name]));
+    const roster = [...(team.roster || [])];
+    outgoingLoans.forEach(l => { if (!roster.includes(l.player)) roster.push(l.player); });
     const sortArrow = (active, key, dir) => active === key ? (dir === 'desc' ? ' ▼' : ' ▲') : '';
     const sortableTh = (label, key, activeKey, dir, dataAttr) =>
       `<th data-${dataAttr}="${key}" style="cursor:pointer;user-select:none" title="Ordina per ${label.toLowerCase()}">${label}${sortArrow(activeKey, key, dir)}</th>`;
@@ -2721,9 +2805,17 @@ function showTeamDetailsModal(teamName) {
       const sortedRoster = sortPlayersBy(roster, ROSTER_SORT_KEYS, rosterSortKey, rosterSortDir);
       const rosterRows = sortedRoster.map(p => {
         const salary = getPlayerSalaryDisplay(p.strength);
-        const durVal = p.contract?.duration;
-        const dur = !durVal || durVal <= 0 ? '⚠️ scad.' : `${durVal}a`;
-        return `<tr class="db-row-clickable" data-player-id="${p.id}"><td class="col-naz">${formatNationality(p)}</td><td><span class="player-name-link">${p.firstName} ${p.lastName}</span></td><td>${formatRoleBadges(p)}</td><td style="font-size:.82rem;color:#666">${formatSubRoles(p)}</td><td>${p.age}</td><td><strong>${p.strength}</strong></td><td>${formatForma(p)}</td><td>${formatMoneyK(salary)}€/anno</td><td>${dur}</td></tr>`;
+        const isLoanedIn = loanedInTeamById.has(p.id);
+        const isLoanedOut = outgoingLoanTeamById.has(p.id);
+        let dur;
+        if (isLoanedIn) dur = `🔄 dal ${loanedInTeamById.get(p.id)}`;
+        else if (isLoanedOut) dur = `🔄 al ${outgoingLoanTeamById.get(p.id)}`;
+        else {
+          const durVal = p.contract?.duration;
+          dur = !durVal || durVal <= 0 ? '⚠️ scad.' : `${durVal}a`;
+        }
+        const rowStyle = (isLoanedIn || isLoanedOut) ? ' style="background:#f1f5f9"' : '';
+        return `<tr class="db-row-clickable" data-player-id="${p.id}"${rowStyle}><td class="col-naz">${formatNationality(p)}</td><td><span class="player-name-link">${p.firstName} ${p.lastName}</span></td><td>${formatRoleBadges(p)}</td><td style="font-size:.82rem;color:#666">${formatSubRoles(p)}</td><td>${p.age}</td><td><strong>${p.strength}</strong></td><td>${formatForma(p)}</td><td>${formatMoneyK(salary)}€/anno</td><td>${dur}</td></tr>`;
       }).join('');
       tableSection = `<h4>Rosa (${sortedRoster.length} giocatori)</h4>
       <table>
@@ -2923,10 +3015,38 @@ function buildCoachScreenPitchHtml(positioned) {
   </div>`;
 }
 
-// Vista "Migliori 11": lista testuale dei titolari con la forza EFFETTIVA
+// Riga di un giocatore in una lista titolari/riserve, con la forza EFFETTIVA
 // schierata (malus incluso per chi gioca fuori posizione/ruolo) — stesso
 // stile/logica delle righe titolari nel modal dettaglio partita
-// (showMatchDetailModal), qui riusata per coerenza visiva.
+// (showMatchDetailModal), riusata da tutte le viste a lista della schermata
+// Allenatore (Migliori 11, Titolari/Riserve).
+function renderCoachScreenPlayerRow(entry, opts) {
+  opts = opts || {};
+  const { player: p, role: entryRole, fit, assignedSubRole } = entry;
+  const rowClass = fit === 'outOfRole' ? ' md-oor' : fit === 'outOfPosition' ? ' md-oop' : '';
+  const fitTitle = fit === 'outOfRole' ? 'Fuori ruolo: 90% forza' : fit === 'outOfPosition' ? 'Fuori posizione: 95% forza' : '';
+  // Vedi buildCoachScreenPitchHtml: fallback alla prima posizione del ruolo
+  // quando lo slot è stato tappato "fuori ruolo" (nessuna posizione
+  // assegnata in quel caso).
+  const posCode = assignedSubRole || ROLE_POSITIONS[entryRole]?.[0];
+  const positionLabel = entryRole !== 'POR' && posCode ? (ROLE_POSITION_LABELS[posCode] || posCode) : '';
+  const effStr = Math.round(p.strength * FIT_STRENGTH_MULT[fit]);
+  const ovrClass = fit === 'outOfRole' ? ' md-ovr-oor' : fit === 'outOfPosition' ? ' md-ovr-oop' : '';
+  const ovrDisplay = fit === 'position' ? p.strength : effStr;
+  // opts.compact: colonna stretta (Titolari/Riserve affiancate) — solo
+  // cognome, niente posizione tra parentesi, font più piccolo (via classe).
+  const nameHtml = opts.compact
+    ? p.lastName
+    : `${p.firstName} ${p.lastName}${positionLabel ? ` <span style="font-size:.7rem;color:#999">(${positionLabel})</span>` : ''}`;
+  return `<div class="md-player-row${opts.compact ? ' md-player-row-compact' : ''}${rowClass}"${fitTitle ? ` title="${fitTitle}"` : ''}>
+    <span class="md-role-badge role-${entryRole}">${entryRole}</span>
+    <span>${nameHtml}</span>
+    <span class="md-ovr${ovrClass}" title="${fit !== 'position' ? `Forza reale ${p.strength} × ${Math.round(FIT_STRENGTH_MULT[fit] * 100)}%` : ''}">${ovrDisplay}</span>
+    ${opts.showForma ? `<span class="md-forma">${formatForma(p)}</span>` : ''}
+  </div>`;
+}
+
+// Vista "Migliori 11": lista testuale dei titolari.
 function buildCoachScreenBest11ListHtml(best11, showForma = true) {
   // getBest11 riempie prima ogni ruolo con chi lo sa giocare, e solo alla
   // fine (seconda passata) tappa gli slot rimasti vuoti con chi capita —
@@ -2934,25 +3054,67 @@ function buildCoachScreenBest11ListHtml(best11, showForma = true) {
   // spostando la riga in fondo alla lista. Riordiniamo sempre per ROLE_ORDER
   // così l'elenco resta nel consueto ordine di reparto (POR→ATT).
   const ordered = [...best11].sort((a, b) => ROLE_ORDER[a.role] - ROLE_ORDER[b.role]);
-  const rows = ordered.map(({ player: p, role: entryRole, fit, assignedSubRole }) => {
-    const rowClass = fit === 'outOfRole' ? ' md-oor' : fit === 'outOfPosition' ? ' md-oop' : '';
-    const fitTitle = fit === 'outOfRole' ? 'Fuori ruolo: 90% forza' : fit === 'outOfPosition' ? 'Fuori posizione: 95% forza' : '';
-    // Vedi buildCoachScreenPitchHtml: fallback alla prima posizione del
-    // ruolo quando lo slot è stato tappato "fuori ruolo" (nessuna posizione
-    // assegnata in quel caso).
-    const posCode = assignedSubRole || ROLE_POSITIONS[entryRole]?.[0];
-    const positionLabel = entryRole !== 'POR' && posCode ? (ROLE_POSITION_LABELS[posCode] || posCode) : '';
-    const effStr = Math.round(p.strength * FIT_STRENGTH_MULT[fit]);
-    const ovrClass = fit === 'outOfRole' ? ' md-ovr-oor' : fit === 'outOfPosition' ? ' md-ovr-oop' : '';
-    const ovrDisplay = fit === 'position' ? p.strength : effStr;
-    return `<div class="md-player-row${rowClass}"${fitTitle ? ` title="${fitTitle}"` : ''}>
-      <span class="md-role-badge role-${entryRole}">${entryRole}</span>
-      <span>${p.firstName} ${p.lastName}${positionLabel ? ` <span style="font-size:.7rem;color:#999">(${positionLabel})</span>` : ''}</span>
-      <span class="md-ovr${ovrClass}" title="${fit !== 'position' ? `Forza reale ${p.strength} × ${Math.round(FIT_STRENGTH_MULT[fit] * 100)}%` : ''}">${ovrDisplay}</span>
-      ${showForma ? `<span class="md-forma">${formatForma(p)}</span>` : ''}
+  const rows = ordered.map(e => renderCoachScreenPlayerRow(e, { showForma })).join('');
+  return `<div class="coach-best11-list">${rows}</div>`;
+}
+
+// Vista "Migliori 11" a campo: come "Modulo" ma il pallino mostra la forza
+// EFFETTIVA (malus di posizione/ruolo incluso) del titolare AL POSTO
+// dell'icona generica, col cognome sopra e la posizione richiesta
+// dall'allenatore sotto (stessa etichetta di "Modulo").
+function buildBest11ValuePitchHtml(positioned) {
+  const dotsHtml = positioned.map(({ player, role, assignedSubRole, fit, x, y }) => {
+    const fitClass = fit === 'outOfRole' ? ' pitch-dot-oor' : fit === 'outOfPosition' ? ' pitch-dot-oop' : '';
+    const value = Math.round(player.strength * FIT_STRENGTH_MULT[fit]);
+    const posCode = assignedSubRole || ROLE_POSITIONS[role]?.[0];
+    const posLabel = posCode ? (ROLE_POSITION_LABELS[posCode] || posCode) : '';
+    return `<div class="pitch-dot-wrap zone-${ROLE_ZONE[role] || 'CEN'}" style="left:${x}%;top:${y}%" title="${player.firstName} ${player.lastName}">
+      <div class="pitch-dot-role">${player.lastName}</div>
+      <div class="pitch-dot${fitClass}"><div class="pitch-dot-value-circle"><span class="pitch-dot-value-text">${value}</span></div></div>
+      ${posLabel ? `<div class="pitch-dot-pos">(${posLabel})</div>` : ''}
     </div>`;
   }).join('');
-  return `<div class="coach-best11-list">${rows}</div>`;
+  return `<div class="pitch-container">
+    <img class="pitch-bg" src="assets/pitch/formation.BMP" alt="">
+    ${dotsHtml}
+  </div>`;
+}
+
+// Vista "Titolari/Riserve": due colonne affiancate (Titolari a sinistra,
+// Riserve a destra) — ogni riga di titolare è affiancata alla riserva dello
+// stesso ruolo/slot (getBest11 sul resto della rosa, stesso modulo). Se
+// manca una riserva per quello slot (rosa corta) resta comunque il posto
+// vuoto al suo posto, invece di sparire e disallineare le due colonne.
+function buildTitolariRiserveHtml(starters, reserves) {
+  const byRole = (entries) => {
+    const map = new Map();
+    entries.forEach(e => { if (!map.has(e.role)) map.set(e.role, []); map.get(e.role).push(e); });
+    return map;
+  };
+  const startersByRole = byRole(starters);
+  const reservesByRole = byRole(reserves);
+  const roles = ROLES.filter(r => startersByRole.has(r) || reservesByRole.has(r));
+
+  const cell = (entry, emptyLabel) => entry
+    ? renderCoachScreenPlayerRow(entry, { compact: true })
+    : `<div class="md-player-row md-player-row-compact tr-empty">${emptyLabel}</div>`;
+
+  let rows = '';
+  roles.forEach(role => {
+    const starterList = startersByRole.get(role) || [];
+    const reserveList = reservesByRole.get(role) || [];
+    const n = Math.max(starterList.length, reserveList.length);
+    for (let i = 0; i < n; i++) {
+      rows += `<div class="tr-row">
+        <div class="tr-col">${cell(starterList[i], '—')}</div>
+        <div class="tr-col">${cell(reserveList[i], '— nessuna riserva —')}</div>
+      </div>`;
+    }
+  });
+  return `<div class="coach-tr-wrap">
+    <div class="tr-row tr-head"><div class="tr-col">Titolari</div><div class="tr-col">Riserve</div></div>
+    ${rows}
+  </div>`;
 }
 
 function showCoachDetailScreen(team) {
@@ -2970,7 +3132,7 @@ function showCoachDetailScreen(team) {
     ? `Moduli preferiti: <strong>${coach.formations.join(' / ')}</strong> — in campo: <strong>${activeFormation}</strong>`
     : 'Nessun allenatore in carica.';
 
-  let view = 'modulo'; // 'modulo' | 'best11'
+  let view = 'modulo'; // 'modulo' | 'best11' | 'roster'
   let selectedFormation = activeFormation;
 
   const render = () => {
@@ -2979,7 +3141,17 @@ function showCoachDetailScreen(team) {
 
     const seg = (val, label) => `<button type="button" class="mm-seg${view === val ? ' active' : ''}" data-coach-view="${val}">${label}</button>`;
     const formationBtn = (name) => `<button type="button" class="mm-seg${selectedFormation === name ? ' active' : ''}" data-coach-formation="${name}">${name}${name === activeFormation ? ' ⭐' : ''}</button>`;
-    const body = view === 'modulo' ? buildCoachScreenPitchHtml(positioned) : buildCoachScreenBest11ListHtml(best11);
+    let body;
+    if (view === 'modulo') {
+      body = buildCoachScreenPitchHtml(positioned);
+    } else if (view === 'best11') {
+      body = buildBest11ValuePitchHtml(positioned);
+    } else {
+      const usedIds = new Set(best11.map(e => e.player.id));
+      const reserveRoster = (team.roster || []).filter(p => !usedIds.has(p.id));
+      const reserves = getBest11(reserveRoster, selectedFormation, { ignoreForma: true });
+      body = buildTitolariRiserveHtml(best11, reserves);
+    }
     overlay.innerHTML = `
       <div class="mm-box coach-screen-box">
         <div class="mm-header">
@@ -2989,7 +3161,7 @@ function showCoachDetailScreen(team) {
         <div class="coach-screen-body">
           <p style="font-size:.85rem;color:#557;margin:0 2px 10px">${formationsNote}</p>
           ${preferredFormations.length > 1 ? `<div class="mm-seg-group" style="margin-bottom:8px">${preferredFormations.map(formationBtn).join('')}</div>` : ''}
-          <div class="mm-seg-group" style="margin-bottom:10px">${seg('modulo', '📐 Modulo')}${seg('best11', '🧮 Migliori 11')}</div>
+          <div class="mm-seg-group" style="margin-bottom:10px">${seg('modulo', '📐 Modulo')}${seg('best11', '🧮 Migliori 11')}${seg('roster', '🔁 Titolari/Riserve')}</div>
           <div class="coach-screen-view">${body}</div>
         </div>
       </div>`;
@@ -3024,9 +3196,15 @@ function computeGenericFormationSlots(formationName) {
 
 function buildGenericFormationPitchHtml(formationName) {
   const dotsHtml = computeGenericFormationSlots(formationName).map(({ role, x, y }) => {
+    // Nessun giocatore reale assegnato (schema generico) — mostriamo comunque
+    // la prima posizione del ruolo come etichetta di riferimento dello slot,
+    // stesso fallback usato da buildCoachScreenPitchHtml per gli slot vuoti.
+    const posCode = ROLE_POSITIONS[role]?.[0];
+    const posLabel = posCode ? (ROLE_POSITION_LABELS[posCode] || posCode) : '';
     return `<div class="pitch-dot-wrap zone-${ROLE_ZONE[role] || 'CEN'}" style="left:${x}%;top:${y}%">
       <div class="pitch-dot-role">${role}</div>
       <div class="pitch-dot">${PITCH_DOT_SVG}</div>
+      ${posLabel ? `<div class="pitch-dot-pos">(${posLabel})</div>` : ''}
     </div>`;
   }).join('');
   return `<div class="pitch-container">
@@ -3084,7 +3262,7 @@ function showSeasonFormationNotice(team, onDone) {
   const activeFormation = pickActiveFormation(team);
   const preferredFormations = team.coach.formations?.length ? [...new Set(team.coach.formations)] : [activeFormation];
   let selected = activeFormation;
-  let view = 'modulo'; // 'modulo' | 'best11'
+  let view = 'modulo'; // 'modulo' | 'best11' | 'roster'
   let closed = false;
   const close = () => { if (closed) return; closed = true; overlay.remove(); if (onDone) onDone(); };
 
@@ -3093,7 +3271,17 @@ function showSeasonFormationNotice(team, onDone) {
     const positioned = computePitchPositions(best11);
     const formationBtn = (name) => `<button type="button" class="mm-seg${selected === name ? ' active' : ''}" data-notice-formation="${name}">${name}${name === activeFormation ? ' ⭐' : ''}</button>`;
     const viewBtn = (val, label) => `<button type="button" class="mm-seg${view === val ? ' active' : ''}" data-notice-view="${val}">${label}</button>`;
-    const body = view === 'modulo' ? buildCoachScreenPitchHtml(positioned) : buildCoachScreenBest11ListHtml(best11);
+    let body;
+    if (view === 'modulo') {
+      body = buildCoachScreenPitchHtml(positioned);
+    } else if (view === 'best11') {
+      body = buildBest11ValuePitchHtml(positioned);
+    } else {
+      const usedIds = new Set(best11.map(e => e.player.id));
+      const reserveRoster = team.roster.filter(p => !usedIds.has(p.id));
+      const reserves = getBest11(reserveRoster, selected, { ignoreForma: true });
+      body = buildTitolariRiserveHtml(best11, reserves);
+    }
     overlay.innerHTML = `
       <div class="mm-box coach-screen-box">
         <div class="mm-header">
@@ -3103,7 +3291,7 @@ function showSeasonFormationNotice(team, onDone) {
         <div class="coach-screen-body">
           <p style="font-size:.9rem;margin:0 2px 10px">"Io gioco con questi moduli, tienine conto in fase di mercato."</p>
           ${preferredFormations.length > 1 ? `<div class="mm-seg-group" style="margin-bottom:8px">${preferredFormations.map(formationBtn).join('')}</div>` : ''}
-          <div class="mm-seg-group" style="margin-bottom:10px">${viewBtn('modulo', '📐 Modulo')}${viewBtn('best11', '🧮 Migliori 11')}</div>
+          <div class="mm-seg-group" style="margin-bottom:10px">${viewBtn('modulo', '📐 Modulo')}${viewBtn('best11', '🧮 Migliori 11')}${viewBtn('roster', '🔁 Titolari/Riserve')}</div>
           <div class="coach-screen-view">${body}</div>
           <button class="mm-btn mm-confirm" id="season-formation-continue" style="width:100%;margin-top:10px">Continua al mercato →</button>
         </div>
@@ -3928,7 +4116,7 @@ function generateDSJobOffers() {
 
   return offers.map(team => ({
     team,
-    years: 2 + Math.floor(Math.random() * 2),
+    years: 1 + Math.floor(Math.random() * 3),
     objectiveLabel: estimateObjectiveLabel(team),
   }));
 }
@@ -4117,7 +4305,7 @@ function showSeasonEvaluationModal(d, onDone) {
   const fired = failedBadly && Math.random() < getPresidentFireChance(playerTeam.president, 0.45);
   const expired = !fired && dsCareer.contractYears <= 0;
   const renewalOffered = expired && d.rank <= maxRank + 2;
-  const renewYears = 2 + Math.floor(Math.random() * 2);
+  const renewYears = 1 + Math.floor(Math.random() * 3);
 
   // Corteggiamento: se hai overperformato, un club di fascia superiore può cercarti
   const lgRank = lv => lv === 'A' ? 1 : lv === 'B' ? 2 : 3;
@@ -4134,8 +4322,8 @@ function showSeasonEvaluationModal(d, onDone) {
   const note = [
     d.wonTitle ? `${trophyIconHtml('scudetto', 'Scudetto')} Scudetto` : '',
     d.wonCup ? `${trophyIconHtml('coppa', 'Coppa Italia')} Coppa Italia` : '',
-    d.promoted ? '🎉 Promozione' : '',
-    d.relegated ? '📉 Retrocessione' : '',
+    d.promoted ? `${promoRelegIconHtml('promozione', 'Promozione')} Promozione` : '',
+    d.relegated ? `${promoRelegIconHtml('retrocessione', 'Retrocessione')} Retrocessione` : '',
     fired ? '🚨 Esonerato' : '',
   ].filter(Boolean).join(' · ');
   dsCareer.history.push({
@@ -4253,13 +4441,11 @@ function showDSCareerModal() {
       <div class="mm-footer">
         <span class="mm-footer-note">${playerTeam ? `Attualmente DS di ${playerTeam.name} (contratto: ${Math.max(0, dsCareer.contractYears)} anni)` : 'Attualmente senza squadra'}</span>
         <span>
-          <button class="mm-btn mm-blue" id="dsc-market">🔍 Valuta altre offerte</button>
           <button class="mm-btn mm-confirm" id="dsc-close">Chiudi</button>
         </span>
       </div>
     </div>`;
   overlay.querySelector('#dsc-close').addEventListener('click', () => overlay.remove());
-  overlay.querySelector('#dsc-market').addEventListener('click', () => showJobMarketBrowserModal());
   overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
   document.body.appendChild(overlay);
 }
@@ -4384,7 +4570,7 @@ function showTeamSelectionScreen() {
         // stima slegata basata sulla forza grezza della squadra.
         const tier = estimateObjectiveGlobalTier(team);
         dsCareer.reputation = JOB_OFFER_REP_BASE + (tier - 1) * JOB_OFFER_REP_STEP;
-        hirePlayerAsDS(team, 2 + Math.floor(Math.random() * 2));
+        hirePlayerAsDS(team, 1 + Math.floor(Math.random() * 3));
         overlay.remove();
         startCareerMarketSession();
       });
@@ -4500,7 +4686,9 @@ function runWinterAITransfers() {
     const sellable = team.roster.filter(p => p.role !== 'POR' && p.strength > 40 && !loanedPlayers.has(p));
     if (!sellable.length) return;
     const player = sellable[Math.floor(Math.random() * sellable.length)];
-    const askingPrice = Math.round(getTransferValue(player) * (1.2 + Math.random() * 0.6) * 10) / 10;
+    // Stesso range di prezzo usato quando è il giocatore umano a vendere
+    // (generateSellOffers, 0.8-1.3x) invece di un premio 1.2-1.8x.
+    const askingPrice = Math.round(getTransferValue(player) * (0.8 + Math.random() * 0.5) * 10) / 10;
     team.roster = team.roster.filter(p => p !== player);
     recalculateTeamStrength(team);
     winterMarket.push({ player, fromTeam: team, askingPrice });
@@ -4602,8 +4790,21 @@ function runWinterAITransfers() {
 // ── Filtri di ricerca giocatori nei modali mercato ──────────────────────────
 function matchesFilter(p, f) {
   if (f.role && !playerCanPlayRole(p, f.role)) return false;
+  // La posizione ha senso solo insieme a un ruolo specifico (le opzioni nel
+  // filtro cambiano in base al ruolo selezionato) — ignorata se non c'è un
+  // ruolo scelto.
+  if (f.role && f.position && !playerPositionsFor(p, f.role).includes(f.position)) return false;
   if (p.age < f.ageMin || p.age > f.ageMax) return false;
   if (p.strength < f.strMin || p.strength > f.strMax) return false;
+  return true;
+}
+
+// Filtro prezzo (in M€), applicato solo agli acquisti (le proposte hanno un
+// prezzo vero — i prestiti sono sempre gratis, niente filtro prezzo lì).
+function matchesPriceFilter(price, f) {
+  if (f.priceMin == null && f.priceMax == null) return true;
+  if (f.priceMin != null && price < f.priceMin) return false;
+  if (f.priceMax != null && price > f.priceMax) return false;
   return true;
 }
 
@@ -4634,6 +4835,20 @@ function rosaRenewDurationSelectHtml(id, currentDuration) {
   return `<select data-rosa-renew-dur="${id}" style="padding:3px 6px;border-radius:4px;border:1px solid var(--border-card);font-size:.78rem">${opts}</select>`;
 }
 
+// Select "Posizione", dipendente dal ruolo selezionato: le opzioni sono le
+// 2 posizioni di QUEL ruolo (ROLE_POSITIONS) — disabilitato/vuoto se non è
+// stato scelto un ruolo specifico (le posizioni non hanno senso "tra tutti
+// i ruoli", ognuno ha le sue).
+function buildPositionFilterSelect(f) {
+  const positions = f.role ? (ROLE_POSITIONS[f.role] || []) : [];
+  const opt = (val, label) => `<option value="${val}"${f.position === val ? ' selected' : ''}>${label}</option>`;
+  return `<label>Posizione
+    <select data-filter="position" style="margin-left:4px" ${positions.length ? '' : 'disabled'}>
+      ${opt('', 'Tutte')}${positions.map(p => opt(p, ROLE_POSITION_LABELS[p] || p)).join('')}
+    </select>
+  </label>`;
+}
+
 function buildFilterBar(f, showScoutSeg) {
   const opt = (val, label) => `<option value="${val}"${f.role === val ? ' selected' : ''}>${label}</option>`;
   const seg = (val, label) => `<button type="button" class="mm-seg${(f.availability || 'all') === val ? ' active' : ''}" data-avail="${val}">${label}</button>`;
@@ -4644,6 +4859,7 @@ function buildFilterBar(f, showScoutSeg) {
         ${opt('', 'Tutti')}${ROLES.map(r => opt(r, r)).join('')}
       </select>
     </label>
+    ${buildPositionFilterSelect(f)}
     <label>Età
       <input type="number" data-filter="ageMin" value="${f.ageMin}" min="16" max="40" style="width:52px;margin-left:4px"> -
       <input type="number" data-filter="ageMax" value="${f.ageMax}" min="16" max="40" style="width:52px">
@@ -4652,16 +4868,19 @@ function buildFilterBar(f, showScoutSeg) {
       <input type="number" data-filter="strMin" value="${f.strMin}" min="0" max="100" style="width:52px;margin-left:4px"> -
       <input type="number" data-filter="strMax" value="${f.strMax}" min="0" max="100" style="width:52px">
     </label>
+    <label>Prezzo (M€)
+      <input type="number" data-filter="priceMin" value="${f.priceMin}" min="0" max="250" style="width:56px;margin-left:4px"> -
+      <input type="number" data-filter="priceMax" value="${f.priceMax}" min="0" max="250" style="width:56px">
+    </label>
     <button class="mm-btn" data-action="filter-reset" style="padding:2px 10px;font-size:.8rem">Reset</button>
     <div class="mm-seg-group" style="margin-left:auto">${seg('all', 'Tutti')}${seg('market', '🛒 Sul mercato')}${seg('free', '🆓 Svincolati')}${showScoutSeg ? seg('scout', '🌍 Area Scout') : ''}</div>
   </div>`;
 }
 
 // Variante semplificata di buildFilterBar per la tab Prestiti: stessi filtri
-// ruolo/età/forza (riusa matchesFilter/wireFilterBar), ma SENZA il segmento
-// "Tutti/Sul mercato/Svincolati" — quella distinzione non ha senso per i
-// candidati in prestito (sono tutti "disponibili in prestito", non c'è
-// un'analoga dicotomia mercato/svincolati).
+// ruolo/posizione/età/forza (riusa matchesFilter/wireFilterBar), ma SENZA il
+// segmento "Tutti/Sul mercato/Svincolati" (non ha senso per i candidati in
+// prestito) e SENZA il filtro prezzo (i prestiti sono sempre gratis).
 function buildLoanFilterBar(f) {
   const opt = (val, label) => `<option value="${val}"${f.role === val ? ' selected' : ''}>${label}</option>`;
   return `<div class="mm-filters" style="margin-bottom:10px;padding:8px 10px;background:#f5f5f5;border:1px solid #ddd;border-radius:6px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;font-size:.82rem">
@@ -4671,6 +4890,7 @@ function buildLoanFilterBar(f) {
         ${opt('', 'Tutti')}${ROLES.map(r => opt(r, r)).join('')}
       </select>
     </label>
+    ${buildPositionFilterSelect(f)}
     <label>Età
       <input type="number" data-filter="ageMin" value="${f.ageMin}" min="16" max="40" style="width:52px;margin-left:4px"> -
       <input type="number" data-filter="ageMax" value="${f.ageMax}" min="16" max="40" style="width:52px">
@@ -4683,18 +4903,33 @@ function buildLoanFilterBar(f) {
   </div>`;
 }
 
+// Ogni campo MIN ha il proprio MAX corrispondente: se alzi il minimo oltre
+// il massimo, il massimo si alza per restare almeno uguale (mai il
+// contrario — solo questa direzione, come richiesto).
+const FILTER_MIN_MAX_PAIRS = { ageMin: 'ageMax', strMin: 'strMax', priceMin: 'priceMax' };
+
 function wireFilterBar(overlay, filter, render) {
   overlay.querySelectorAll('[data-filter]').forEach(el => {
     el.addEventListener('change', () => {
       const key = el.dataset.filter;
-      if (key === 'role') filter.role = el.value;
-      else filter[key] = Math.max(0, +el.value || 0);
+      if (key === 'role') {
+        filter.role = el.value;
+        filter.position = ''; // le posizioni dipendono dal ruolo: si azzerano al cambio
+      } else if (key === 'position') {
+        filter.position = el.value;
+      } else {
+        filter[key] = Math.max(0, +el.value || 0);
+        const maxKey = FILTER_MIN_MAX_PAIRS[key];
+        if (maxKey && filter[maxKey] != null && filter[key] > filter[maxKey]) filter[maxKey] = filter[key];
+      }
       render();
     });
   });
   const resetBtn = overlay.querySelector('[data-action="filter-reset"]');
   if (resetBtn) resetBtn.addEventListener('click', () => {
-    filter.role = ''; filter.ageMin = 16; filter.ageMax = 40; filter.strMin = 0; filter.strMax = 100;
+    filter.role = ''; filter.position = ''; filter.ageMin = 16; filter.ageMax = 40; filter.strMin = 0; filter.strMax = 100;
+    if (filter.priceMin != null) filter.priceMin = 0;
+    if (filter.priceMax != null) filter.priceMax = 250;
     render();
   });
   overlay.querySelectorAll('[data-avail]').forEach(el => {
@@ -4708,6 +4943,11 @@ function wireFilterBar(overlay, filter, render) {
 function showWinterMarketModal(onConfirm) {
   const preContractIds = new Set(pendingPreContracts.map(pc => pc.player.id));
   const boughtIds = new Set();
+  // Un giocatore venduto/ceduto in questa sessione (Offerte ricevute, Rosa →
+  // Vendi) non deve poter essere ricomprato nella STESSA sessione — senza
+  // questo, "Tutti i giocatori" (scansione live di tutte le rose) lo
+  // rimostra subito nella rosa dell'acquirente, riacquistabile all'istante.
+  const soldIds = new Set();
   // Giocatori all'ultimo anno di contratto (scadenza a fine di QUESTA
   // stagione) con una squadra interessata (renewalInterest, calcolato in
   // finishAndata prima di aprire questo modal): SOLO questi compaiono nella
@@ -4729,7 +4969,7 @@ function showWinterMarketModal(onConfirm) {
       if (Math.random() > 0.30) return;
       const bid = getTransferValue(player) * 1.3;
       const interested = winterAiTeams
-        .filter(t => t.budget >= bid && canAddRole(t, player.role) && canTeamAcquirePlayer(t, player))
+        .filter(t => t.budget >= bid && canAddRole(t, player.role) && canTeamAcquirePlayer(t, player) && fitsLeagueStrength(player.strength, t.leagueLevel))
         .map(t => ({ team: t, ev: evaluateTransferTarget(t, player, bid) }))
         .filter(x => x.ev && x.ev.gain > 0)
         .sort((a, b) => b.ev.gain - a.ev.gain);
@@ -4752,8 +4992,8 @@ function showWinterMarketModal(onConfirm) {
   let loanCandidates = []; // ricostruito a ogni render della tab Prestiti: idx → { player, fromTeam }
   let moduliView = 'modulo'; // vista tab Moduli: 'modulo' | 'best11'
   let moduliFormation = null; // modulo selezionato nella tab Moduli (lazy: parte dall'attivo)
-  const filter = { role: '', ageMin: 16, ageMax: 40, strMin: 0, strMax: 100, availability: 'all' };
-  const loanFilter = { role: '', ageMin: 16, ageMax: 40, strMin: 0, strMax: 100 };
+  const filter = { role: '', position: '', ageMin: 16, ageMax: 40, strMin: 0, strMax: 100, priceMin: 0, priceMax: 250, availability: 'all' };
+  const loanFilter = { role: '', position: '', ageMin: 16, ageMax: 40, strMin: 0, strMax: 100 };
 
   // Azioni per-riga nella tab Rosa (Rinnova/Vendi/Presta/Svincola sempre
   // disponibili) — stesso meccanismo del mercato estivo, vedi lì per i commenti.
@@ -4813,23 +5053,32 @@ function showWinterMarketModal(onConfirm) {
 
   const buildAcquistiTab = () => {
     let html = buildFilterBar(filter);
+    if (!canPlayerSignMore(playerTeam)) {
+      html += '<p class="mm-empty">🚫 Numero giocatori massimo rosa raggiunto.</p>';
+      return html;
+    }
     const cap = leagueStrCap(playerTeam.leagueLevel);
     const avail = filter.availability || 'all';
-    const eligible = item => !boughtIds.has(item.player.id) && item.player.strength <= cap && canPlayerSignMore(playerTeam) && canTeamAcquirePlayer(playerTeam, item.player) && matchesFilter(item.player, filter);
+    const eligible = item => !boughtIds.has(item.player.id) && !soldIds.has(item.player.id) && item.player.strength <= cap && canPlayerSignMore(playerTeam) && canTeamAcquirePlayer(playerTeam, item.player) && matchesFilter(item.player, filter) && matchesPriceFilter(item.askingPrice, filter);
     // "Sul mercato" (vista Mercato) = SOLO i giocatori realmente messi in vendita
     // dalle squadre (pendingTransferMarket, curato dalle trattative AI).
     // "Tutti" (vista di default) = TUTTI i giocatori di tutte le altre squadre,
     // acquistabili al loro valore di trasferimento anche se non "in vendita".
     const marketOnlyItems = pendingTransferMarket.filter(eligible);
+    // Un giocatore già "Sul mercato" ha un prezzo REALE (l'askingPrice fissato
+    // quando è stato messo in vendita, scontato/premiato secondo i casi) —
+    // "Tutti i giocatori" deve mostrare LO STESSO prezzo per lui, non
+    // ricalcolarne uno diverso al volo dal solo valore di trasferimento.
+    const marketPriceById = new Map(pendingTransferMarket.map(item => [item.player.id, item.askingPrice]));
     const allClubItems = [...serieA, ...serieB, ...serieC]
       .filter(t => t !== playerTeam)
-      .flatMap(t => t.roster.map(p => ({ player: p, fromTeam: t, askingPrice: getTransferValue(p) })))
+      .flatMap(t => t.roster.map(p => ({ player: p, fromTeam: t, askingPrice: marketPriceById.get(p.id) ?? getTransferValue(p) })))
       .filter(eligible);
     const mktItems = (avail === 'market' ? marketOnlyItems : allClubItems)
       .sort((a, b) => b.player.strength - a.player.strength);
     const mktSectionTitle = avail === 'market' ? '🛒 Sul mercato' : '🌍 Tutti i giocatori';
     const faItems = freeAgents
-      .filter(p => !boughtIds.has(p.id) && p.strength <= cap && canPlayerSignMore(playerTeam) && canTeamAcquirePlayer(playerTeam, p) && matchesFilter(p, filter))
+      .filter(p => !boughtIds.has(p.id) && p.strength <= cap && canPlayerSignMore(playerTeam) && canTeamAcquirePlayer(playerTeam, p) && matchesFilter(p, filter) && matchesPriceFilter(0, filter))
       .sort((a, b) => b.strength - a.strength)
       .slice(0, 30);
     if (!mktItems.length && !faItems.length) {
@@ -4874,45 +5123,66 @@ function showWinterMarketModal(onConfirm) {
   const buildPreContrattiTab = () => {
     const cap = leagueStrCap(playerTeam.leagueLevel);
     let html = buildFilterBar(filter);
-    const available = expiringTargets.filter(({ player }) => !preContractIds.has(player.id) && player.strength <= cap && matchesFilter(player, filter));
     if (pendingPreContracts.length) {
       pendingPreContracts.forEach(({ player: p }) => {
         html += `<div class="mm-row mm-done">✅ <strong>${p.firstName} ${p.lastName}</strong> (${p.role}, ⚡${p.strength}) — arriverà la prossima stagione</div>`;
       });
     }
+    if (!canPlayerSignMore(playerTeam)) {
+      html += '<p class="mm-empty">🚫 Numero giocatori massimo rosa raggiunto.</p>';
+      return html;
+    }
+    const available = expiringTargets.filter(({ player }) => !preContractIds.has(player.id) && player.strength <= cap && matchesFilter(player, filter));
     if (!available.length) {
       html += '<p class="mm-empty">Nessun giocatore in scadenza corrisponde ai filtri.</p>';
       return html;
     }
     available.forEach(({ player: p, fromTeam }) => {
-      const canAdd = canPlayerSignMore(playerTeam) && canTeamAcquirePlayer(playerTeam, p);
+      // Il caso "rosa piena" è già intercettato sopra con return anticipato:
+      // qui canAdd può essere false solo per il tetto stranieri in Serie A.
+      const canAdd = canTeamAcquirePlayer(playerTeam, p);
       const salaryMk = p.contract?.salary ?? getDisplaySalary(p.strength);
       html += `<div class="mm-row">
         <div class="mm-pinfo">${formatNationality(p)}<span class="mm-name">${p.firstName} ${p.lastName}</span>${formatRoleBadges(p)}<span style="font-size:.78rem;color:#666">${formatSubRoles(p)}</span><span>${p.age}a</span><span>⚡${p.strength}</span><span class="mm-salary-tag">💼 ${formatMoneyK(annualSalary(salaryMk))}€/anno</span><span class="mm-from-tag">da ${fromTeam.name}</span><span style="font-size:.75rem;color:#e67e22">📋 Scade a fine stagione</span></div>
         <div class="mm-acts"><strong class="mm-price">Gratis (pross. stagione)</strong>
-          <button class="mm-btn mm-green" data-action="wm-precontract" data-pid="${p.id}" ${canAdd ? '' : 'disabled'}>${canAdd ? 'Firma Pre-contratto' : 'Rosa completa'}</button>
+          <button class="mm-btn mm-green" data-action="wm-precontract" data-pid="${p.id}" ${canAdd ? '' : 'disabled'}>${canAdd ? 'Firma Pre-contratto' : '🚫 Tetto stranieri'}</button>
         </div></div>`;
     });
     return html;
   };
 
   const buildRosaTab = () => {
-    if (!playerTeam.roster.length) return '<p class="mm-empty">Rosa vuota.</p>';
-    const roleOrder = ROLE_ORDER;
-    const sorted = [...playerTeam.roster].sort((a, b) => (roleOrder[a.role] - roleOrder[b.role]) || b.strength - a.strength);
-    const loanedInIds = new Set(
-      activeLoans.filter(l => l.loanTeam === playerTeam).map(l => l.player.id)
+    // Giocatori presi in prestito: proprietà del club d'origine (nome mostrato
+    // nella colonna Contratto).
+    const loanedInTeamById = new Map(
+      activeLoans.filter(l => l.loanTeam === playerTeam).map(l => [l.player.id, l.homeTeam.name])
     );
+    // Giocatori prestati altrove: fisicamente non più in playerTeam.roster
+    // (passati alla rosa del club che li ospita), ma restiamo "proprietari" —
+    // li mostriamo come riga informativa in coda alla rosa.
+    const outgoingLoans = activeLoans.filter(l => l.homeTeam === playerTeam);
+    const outgoingLoanTeamById = new Map(outgoingLoans.map(l => [l.player.id, l.loanTeam.name]));
+
+    const all = [...playerTeam.roster];
+    outgoingLoans.forEach(l => { if (!all.includes(l.player)) all.push(l.player); });
+    if (!all.length) return '<p class="mm-empty">Rosa vuota.</p>';
+
+    const roleOrder = ROLE_ORDER;
+    const sorted = [...all].sort((a, b) => (roleOrder[a.role] - roleOrder[b.role]) || b.strength - a.strength);
     const rows = sorted.map(p => {
+      const isLoanedIn = loanedInTeamById.has(p.id);
+      const isLoanedOut = outgoingLoanTeamById.has(p.id);
       const durVal = p.contract?.duration;
-      const dur = (!durVal || durVal <= 0) ? '<span style="color:#e05050">⚠️ scad.</span>' : `${durVal}a`;
+      let dur;
+      if (isLoanedIn) dur = `<span style="color:#64748b;font-weight:700">🔄 dal ${loanedInTeamById.get(p.id)}</span>`;
+      else if (isLoanedOut) dur = `<span style="color:#64748b;font-weight:700">🔄 al ${outgoingLoanTeamById.get(p.id)}</span>`;
+      else dur = (!durVal || durVal <= 0) ? '<span style="color:#e05050">⚠️ scad.</span>' : `${durVal}a`;
       const sal = annualSalary(p.contract?.salary ?? getDisplaySalary(p.strength));
       const injury = (p.injuryMatchesLeft || 0) > 0 ? `<span style="color:#e05050;font-size:.75rem"> 🤕${p.injuryMatchesLeft}gg</span>` : '';
       const susp = (p.suspendedMatchesLeft || 0) > 0 ? `<span style="color:#e05050;font-size:.75rem"> 🚫</span>` : '';
 
-      const isLoanedIn = loanedInIds.has(p.id);
-      const willRetire = !isLoanedIn && p.age >= 36;
-      const eligible = !isLoanedIn && !willRetire;
+      const willRetire = !isLoanedIn && !isLoanedOut && p.age >= 36;
+      const eligible = !isLoanedIn && !isLoanedOut && !willRetire;
       const panel = eligible ? rosaRowPanel.get(p.id) : null;
       let actionsCell = '<td></td>';
       if (eligible) {
@@ -4927,7 +5197,8 @@ function showWinterMarketModal(onConfirm) {
         </td>`;
       }
 
-      const mainRow = `<tr class="db-row-clickable" data-player-id="${p.id}">
+      const rowStyle = (isLoanedIn || isLoanedOut) ? ' style="background:#f1f5f9"' : '';
+      const mainRow = `<tr class="db-row-clickable" data-player-id="${p.id}"${rowStyle}>
         <td class="col-naz">${formatNationality(p)}</td>
         <td><span class="player-name-link">${p.firstName} ${p.lastName}</span>${injury}${susp}</td>
         <td>${formatRoleBadges(p)}</td><td style="font-size:.82rem;color:#666">${formatSubRoles(p)}</td><td>${p.age}</td>
@@ -4974,11 +5245,21 @@ function showWinterMarketModal(onConfirm) {
     const positioned = computePitchPositions(best11);
     const formationBtn = (name) => `<button type="button" class="mm-seg${moduliFormation === name ? ' active' : ''}" data-moduli-formation="${name}">${name}${name === activeFormation ? ' ⭐' : ''}</button>`;
     const viewBtn = (val, label) => `<button type="button" class="mm-seg${moduliView === val ? ' active' : ''}" data-moduli-view="${val}">${label}</button>`;
-    const body = moduliView === 'modulo' ? buildCoachScreenPitchHtml(positioned) : buildCoachScreenBest11ListHtml(best11, false);
+    let body;
+    if (moduliView === 'modulo') {
+      body = buildCoachScreenPitchHtml(positioned);
+    } else if (moduliView === 'best11') {
+      body = buildBest11ValuePitchHtml(positioned);
+    } else {
+      const usedIds = new Set(best11.map(e => e.player.id));
+      const reserveRoster = playerTeam.roster.filter(p => !usedIds.has(p.id));
+      const reserves = getBest11(reserveRoster, moduliFormation, { ignoreForma: true });
+      body = buildTitolariRiserveHtml(best11, reserves);
+    }
     return `<div class="moduli-tab-wrap">
       <p style="font-size:.85rem;color:#557;margin:0 2px 10px">Moduli preferiti di <strong>${coach.firstName} ${coach.lastName}</strong>: <strong>${(coach.formations || []).join(' / ') || activeFormation}</strong> — in campo: <strong>${activeFormation}</strong></p>
       ${preferredFormations.length > 1 ? `<div class="mm-seg-group" style="margin-bottom:8px">${preferredFormations.map(formationBtn).join('')}</div>` : ''}
-      <div class="mm-seg-group" style="margin-bottom:10px">${viewBtn('modulo', '📐 Modulo')}${viewBtn('best11', '🧮 Migliori 11')}</div>
+      <div class="mm-seg-group" style="margin-bottom:10px">${viewBtn('modulo', '📐 Modulo')}${viewBtn('best11', '🧮 Migliori 11')}${viewBtn('roster', '🔁 Titolari/Riserve')}</div>
       <div class="coach-screen-view">${body}</div>
     </div>`;
   };
@@ -5112,6 +5393,7 @@ function showWinterMarketModal(onConfirm) {
             recordTransfer(p, buyerTeam.name, offerPrice);
             transferLog.push(`❄️ <strong>${playerTeam.name}</strong> vende ${p.firstName} ${p.lastName} a <strong>${buyerTeam.name}</strong> per <strong>${offerPrice.toFixed(1)}M€</strong>`);
             offerDecisions.set(id, 'accepted');
+            soldIds.add(id);
           }
         } else if (action === 'refuse-offer') {
           offerDecisions.set(id, 'refused');
@@ -5175,7 +5457,7 @@ function showWinterMarketModal(onConfirm) {
               offers,
               renderSellOfferRow,
               (idx) => {
-                if (idx >= 0) { executeSellOffer(p, offers[idx]); rosaSellOffers.delete(id); invalidatePendingOfferFor(id); }
+                if (idx >= 0) { executeSellOffer(p, offers[idx]); rosaSellOffers.delete(id); invalidatePendingOfferFor(id); soldIds.add(id); }
                 render();
               }
             );
@@ -5627,8 +5909,8 @@ function archiveStaffSeasonHistory() {
     const note = [
       rank === 1 ? `${trophyIconHtml('scudetto', 'Primo posto')} Primo posto` : '',
       s_coppaResult && s_coppaResult.winner === team ? `${trophyIconHtml('coppa', 'Coppa Italia')} Coppa Italia` : '',
-      team.leagueLevel !== 'A' && rank && rank <= NUM_PROMO_RELEG ? '🎉 Promozione' : '',
-      team.leagueLevel !== 'C' && rank && numTeams && rank > numTeams - NUM_PROMO_RELEG ? '📉 Retrocessione' : '',
+      team.leagueLevel !== 'A' && rank && rank <= NUM_PROMO_RELEG ? `${promoRelegIconHtml('promozione', 'Promozione')} Promozione` : '',
+      team.leagueLevel !== 'C' && rank && numTeams && rank > numTeams - NUM_PROMO_RELEG ? `${promoRelegIconHtml('retrocessione', 'Retrocessione')} Retrocessione` : '',
     ].filter(Boolean).join(' · ');
     const entry = {
       season: seasonCount, team: team.name, league: team.leagueLevel,
@@ -6117,7 +6399,13 @@ function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newS
       // usato da generateIncomingLoanCandidates). Nessun limite di rosa minima qui:
       // per costruzione i "migliori 22" restano sempre intoccabili.
       getSquadSurplus(team).filter(p => p.age >= 26).forEach(player => {
-        const askingPrice = Math.max(0.3, getTransferValue(player));
+        // Stesso range di prezzo usato quando è il giocatore umano a vendere
+        // (generateSellOffers, 0.8-1.3x) invece del pieno valore di mercato:
+        // le squadre CPU normalmente in vendita "spontanea" (esubero/rosa
+        // sottotono) non chiedono un premio, anzi accettano di svendere un
+        // po' per liberare spazio — a differenza della stella che vuole fare
+        // il salto di qualità (askingPrice separato sotto, con premio).
+        const askingPrice = Math.max(0.3, getTransferValue(player) * (0.8 + Math.random() * 0.5));
         team.roster = team.roster.filter(p => p !== player);
         transferMarket.push({ player, fromTeam: team, askingPrice, voluntary: true });
       });
@@ -6134,7 +6422,13 @@ function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newS
         if (rosterSize <= ROSTER_MIN_TOTAL) break;
         const overloaded = rosterSize > ROSTER_MIN_TOTAL + 1;
         if (!isWeak && !isUpgradeable && !overloaded) break;
-        const askingPrice = Math.max(0.3, getTransferValue(player));
+        // Stesso range di prezzo usato quando è il giocatore umano a vendere
+        // (generateSellOffers, 0.8-1.3x) invece del pieno valore di mercato:
+        // le squadre CPU normalmente in vendita "spontanea" (esubero/rosa
+        // sottotono) non chiedono un premio, anzi accettano di svendere un
+        // po' per liberare spazio — a differenza della stella che vuole fare
+        // il salto di qualità (askingPrice separato sotto, con premio).
+        const askingPrice = Math.max(0.3, getTransferValue(player) * (0.8 + Math.random() * 0.5));
         team.roster = team.roster.filter(p => p !== player);
         transferMarket.push({ player, fromTeam: team, askingPrice, voluntary: true });
         offered++;
@@ -6811,8 +7105,11 @@ function showManagerMarketModal(onConfirm) {
       // — chi ha idoneità economica/di ruolo ma nessun bisogno tattico non è
       // interessata davvero. L'acquirente è quella col guadagno maggiore, il
       // prezzo ha un premio proporzionale al bisogno (range 1.3-1.8x invariato).
+      // fitsLeagueStrength: stesso vincolo di lega di generateSellOffers — senza
+      // questo controllo una squadra di B/C poteva offrire per un giocatore
+      // ben oltre il proprio tetto di forza.
       const interested = aiTeams
-        .filter(t => t.budget >= bid && canAddRole(t, player.role) && canTeamAcquirePlayer(t, player))
+        .filter(t => t.budget >= bid && canAddRole(t, player.role) && canTeamAcquirePlayer(t, player) && fitsLeagueStrength(player.strength, t.leagueLevel))
         .map(t => ({ team: t, ev: evaluateTransferTarget(t, player, bid) }))
         .filter(x => x.ev && x.ev.gain > 0)
         .sort((a, b) => b.ev.gain - a.ev.gain);
@@ -6836,6 +7133,11 @@ function showManagerMarketModal(onConfirm) {
   const renewalDecisions = new Map(); // player.id → 'renewed' | 'released'
   const offerDecisions = new Map(); // player.id → 'accepted' | 'refused'
   const boughtIds = new Set(); // player.id già acquistati
+  // Un giocatore venduto/ceduto in questa sessione (Offerte ricevute, Rosa →
+  // Vendi) non deve poter essere ricomprato nella STESSA sessione — senza
+  // questo, "Tutti i giocatori" (scansione live di tutte le rose) lo
+  // rimostra subito nella rosa dell'acquirente, riacquistabile all'istante.
+  const soldIds = new Set();
   // Se il giocatore lascia la rosa da un percorso diverso dalla tab Offerte
   // (Vendi/Presta/Svincola dalla tab Rosa), un'eventuale offerta AI pendente
   // per lui va invalidata subito: altrimenti resterebbe accettabile per un
@@ -6846,8 +7148,8 @@ function showManagerMarketModal(onConfirm) {
       offerDecisions.set(playerId, 'refused');
     }
   };
-  const filter = { role: '', ageMin: 16, ageMax: 40, strMin: 0, strMax: 100, availability: 'all' };
-  const loanFilter = { role: '', ageMin: 16, ageMax: 40, strMin: 0, strMax: 100 };
+  const filter = { role: '', position: '', ageMin: 16, ageMax: 40, strMin: 0, strMax: 100, priceMin: 0, priceMax: 250, availability: 'all' };
+  const loanFilter = { role: '', position: '', ageMin: 16, ageMax: 40, strMin: 0, strMax: 100 };
   let coachCandidates = []; // ricostruito a ogni render della tab Panchina: idx → coach da freeCoaches
   let coachBuyCandidates = []; // ricostruito a ogni render della tab Panchina: idx → { coach, fromTeam } acquistabili a pagamento
   let loanCandidates = []; // ricostruito a ogni render della tab Prestiti: idx → { player, fromTeam }
@@ -6946,18 +7248,26 @@ function showManagerMarketModal(onConfirm) {
       .map(pc => pc.player);
     const precontractIds = new Set(precontracts.map(p => p.id));
 
+    // Giocatori presi in prestito: non sono di proprietà, tornano al club
+    // d'origine a inizio stagione — non si cedono e non contano per il futuro
+    const loanedInTeamById = new Map(
+      activeLoans.filter(l => l.loanTeam === playerTeam).map(l => [l.player.id, l.homeTeam.name])
+    );
+    const loanedInIds = new Set(loanedInTeamById.keys());
+    // Giocatori prestati altrove: fisicamente non più in playerTeam.roster
+    // (sono passati alla rosa del club che li ospita), ma restiamo comunque
+    // "proprietari" — li mostriamo come riga informativa in coda alla rosa.
+    const outgoingLoans = activeLoans.filter(l => l.homeTeam === playerTeam);
+    const outgoingLoanTeamById = new Map(outgoingLoans.map(l => [l.player.id, l.loanTeam.name]));
+
     // Unisci la rosa attuale (senza duplicati) con i pre-contratti in arrivo
+    // e i prestiti in uscita (solo per la visualizzazione, vedi sopra)
     const currentRoster = playerTeam.roster;
     const all = [...currentRoster];
     precontracts.forEach(p => { if (!all.includes(p)) all.push(p); });
+    outgoingLoans.forEach(l => { if (!all.includes(l.player)) all.push(l.player); });
 
     if (!all.length) return '<p class="mm-empty">Rosa vuota.</p>';
-
-    // Giocatori presi in prestito: non sono di proprietà, tornano al club
-    // d'origine a inizio stagione — non si cedono e non contano per il futuro
-    const loanedInIds = new Set(
-      activeLoans.filter(l => l.loanTeam === playerTeam).map(l => l.player.id)
-    );
 
     const roleOrder = ROLE_ORDER;
     const sorted = [...all].sort((a, b) => (roleOrder[a.role] - roleOrder[b.role]) || b.strength - a.strength);
@@ -6996,12 +7306,14 @@ function showManagerMarketModal(onConfirm) {
       const isPrecontract = precontractIds.has(p.id);
       const isLeaving = leavingIds.has(p.id);
       const isLoanedIn = loanedInIds.has(p.id);
+      const isLoanedOut = outgoingLoanTeamById.has(p.id);
       const isRenewed = pendingRenewals.some(r => r.id === p.id) && renewalDecisions.get(p.id) === 'renewed';
       const durVal = p.contract?.duration;
-      const willRetire = !isPrecontract && !isLoanedIn && p.age >= 36;
+      const willRetire = !isPrecontract && !isLoanedIn && !isLoanedOut && p.age >= 36;
 
       let status;
-      if (isLoanedIn) status = '<span style="color:#64748b;font-weight:700">🔄 in prestito</span>';
+      if (isLoanedIn) status = `<span style="color:#64748b;font-weight:700">🔄 in prestito dal ${loanedInTeamById.get(p.id)}</span>`;
+      else if (isLoanedOut) status = `<span style="color:#64748b;font-weight:700">🔄 in prestito al ${outgoingLoanTeamById.get(p.id)}</span>`;
       else if (isPrecontract) status = '<span style="color:#2f6fed;font-weight:700">📝 pre-contratto</span>';
       else if (isLeaving) status = '<span style="color:#e05050;font-weight:700">👋 in uscita</span>';
       else if (willRetire) status = '<span style="color:#8e44ad;font-weight:700">🎓 si ritira</span>';
@@ -7009,7 +7321,7 @@ function showManagerMarketModal(onConfirm) {
       else if (!durVal || durVal <= 0) status = '<span style="color:#e05050">⚠️ scad.</span>';
       else status = `${durVal}a`;
 
-      const rowStyle = isLoanedIn ? 'background:#f1f5f9'
+      const rowStyle = (isLoanedIn || isLoanedOut) ? 'background:#f1f5f9'
         : isPrecontract ? 'background:#e3f2fd'
           : isLeaving ? 'background:#fee'
             : willRetire ? 'background:#f5eefa'
@@ -7017,9 +7329,9 @@ function showManagerMarketModal(onConfirm) {
       const sal = annualSalary(p.contract?.salary ?? getDisplaySalary(p.strength));
 
       // Rinnova/Vendi/Presta/Svincola sempre disponibili per ogni giocatore
-      // di proprietà (non per pre-contratti in arrivo, prestiti in ingresso o
-      // chi si ritira comunque a fine stagione)
-      const eligible = !isPrecontract && !isLoanedIn && !willRetire;
+      // di proprietà (non per pre-contratti in arrivo, prestiti in ingresso/
+      // uscita o chi si ritira comunque a fine stagione)
+      const eligible = !isPrecontract && !isLoanedIn && !isLoanedOut && !willRetire;
       const panel = eligible ? rosaRowPanel.get(p.id) : null;
       let actionsCell = '<td></td>';
       if (eligible) {
@@ -7243,11 +7555,21 @@ function showManagerMarketModal(onConfirm) {
     const positioned = computePitchPositions(best11);
     const formationBtn = (name) => `<button type="button" class="mm-seg${moduliFormation === name ? ' active' : ''}" data-moduli-formation="${name}">${name}${name === activeFormation ? ' ⭐' : ''}</button>`;
     const viewBtn = (val, label) => `<button type="button" class="mm-seg${moduliView === val ? ' active' : ''}" data-moduli-view="${val}">${label}</button>`;
-    const body = moduliView === 'modulo' ? buildCoachScreenPitchHtml(positioned) : buildCoachScreenBest11ListHtml(best11, false);
+    let body;
+    if (moduliView === 'modulo') {
+      body = buildCoachScreenPitchHtml(positioned);
+    } else if (moduliView === 'best11') {
+      body = buildBest11ValuePitchHtml(positioned);
+    } else {
+      const usedIds = new Set(best11.map(e => e.player.id));
+      const reserveRoster = playerTeam.roster.filter(p => !usedIds.has(p.id));
+      const reserves = getBest11(reserveRoster, moduliFormation, { ignoreForma: true });
+      body = buildTitolariRiserveHtml(best11, reserves);
+    }
     return `<div class="moduli-tab-wrap">
       <p style="font-size:.85rem;color:#557;margin:0 2px 10px">Moduli preferiti di <strong>${coach.firstName} ${coach.lastName}</strong>: <strong>${(coach.formations || []).join(' / ') || activeFormation}</strong> — in campo: <strong>${activeFormation}</strong></p>
       ${preferredFormations.length > 1 ? `<div class="mm-seg-group" style="margin-bottom:8px">${preferredFormations.map(formationBtn).join('')}</div>` : ''}
-      <div class="mm-seg-group" style="margin-bottom:10px">${viewBtn('modulo', '📐 Modulo')}${viewBtn('best11', '🧮 Migliori 11')}</div>
+      <div class="mm-seg-group" style="margin-bottom:10px">${viewBtn('modulo', '📐 Modulo')}${viewBtn('best11', '🧮 Migliori 11')}${viewBtn('roster', '🔁 Titolari/Riserve')}</div>
       <div class="coach-screen-view">${body}</div>
     </div>`;
   };
@@ -7294,8 +7616,12 @@ function showManagerMarketModal(onConfirm) {
       .filter(({ t }) => canPlayerSignMore(playerTeam));
 
     let html = buildFilterBar(filter, allForeignTargets.length > 0);
+    if (!canPlayerSignMore(playerTeam)) {
+      html += '<p class="mm-empty">🚫 Numero giocatori massimo rosa raggiunto.</p>';
+      return html;
+    }
     const avail = filter.availability || 'all';
-    const foreignTargets = allForeignTargets.filter(({ t }) => matchesFilter(t, filter));
+    const foreignTargets = allForeignTargets.filter(({ t }) => matchesFilter(t, filter) && matchesPriceFilter(t.cost, filter));
 
     // ── Mercato + Svincolati ───────────────────────────────────────────────
     // "Sul mercato" (vista Mercato) = SOLO i giocatori realmente messi in vendita
@@ -7304,17 +7630,21 @@ function showManagerMarketModal(onConfirm) {
     // acquistabili al loro valore di trasferimento anche se non "in vendita".
     const strCap = leagueStrCap(playerTeam.leagueLevel);
     const preContractedIds = new Set(pendingPreContracts.map(pc => pc.player.id));
-    const eligible = item => !boughtIds.has(item.player.id) && !preContractedIds.has(item.player.id) && item.player.strength <= strCap && canPlayerSignMore(playerTeam) && canTeamAcquirePlayer(playerTeam, item.player) && matchesFilter(item.player, filter);
+    const eligible = item => !boughtIds.has(item.player.id) && !soldIds.has(item.player.id) && !preContractedIds.has(item.player.id) && item.player.strength <= strCap && canPlayerSignMore(playerTeam) && canTeamAcquirePlayer(playerTeam, item.player) && matchesFilter(item.player, filter) && matchesPriceFilter(item.askingPrice, filter);
     const marketOnlyItems = pendingTransferMarket.filter(eligible);
+    // Un giocatore già "Sul mercato" ha un prezzo REALE fissato quando è
+    // stato messo in vendita — "Tutti i giocatori" deve mostrare lo stesso
+    // prezzo per lui, non ricalcolarlo al volo dal solo valore di trasferimento.
+    const marketPriceById = new Map(pendingTransferMarket.map(item => [item.player.id, item.askingPrice]));
     const allClubItems = [...serieA, ...serieB, ...serieC]
       .filter(t => t !== playerTeam)
-      .flatMap(t => t.roster.map(p => ({ player: p, fromTeam: t, askingPrice: getTransferValue(p) })))
+      .flatMap(t => t.roster.map(p => ({ player: p, fromTeam: t, askingPrice: marketPriceById.get(p.id) ?? getTransferValue(p) })))
       .filter(eligible);
     const mktItems = avail === 'scout' ? [] : (avail === 'market' ? marketOnlyItems : allClubItems)
       .sort((a, b) => b.player.strength - a.player.strength);
     const mktSectionTitle = avail === 'market' ? '🛒 Sul mercato' : '👥 Tutti i giocatori';
     const faItems = avail === 'scout' ? [] : freeAgents
-      .filter(p => !boughtIds.has(p.id) && !preContractedIds.has(p.id) && p.strength <= strCap && canPlayerSignMore(playerTeam) && canTeamAcquirePlayer(playerTeam, p) && matchesFilter(p, filter))
+      .filter(p => !boughtIds.has(p.id) && !preContractedIds.has(p.id) && p.strength <= strCap && canPlayerSignMore(playerTeam) && canTeamAcquirePlayer(playerTeam, p) && matchesFilter(p, filter) && matchesPriceFilter(0, filter))
       .sort((a, b) => b.strength - a.strength)
       .slice(0, 40);
 
@@ -7521,6 +7851,7 @@ function showManagerMarketModal(onConfirm) {
             recordTransfer(p, buyerTeam.name, offerPrice);
             transferLog.push(`💰 <strong>${playerTeam.name}</strong> vende ${p.firstName} ${p.lastName} a <strong>${buyerTeam.name}</strong> per <strong>${offerPrice.toFixed(1)}M€</strong>`);
             offerDecisions.set(id, 'accepted');
+            soldIds.add(id);
           }
         } else if (action === 'refuse-offer') {
           offerDecisions.set(id, 'refused');
@@ -7673,7 +8004,7 @@ function showManagerMarketModal(onConfirm) {
               offers,
               renderSellOfferRow,
               (idx) => {
-                if (idx >= 0) { executeSellOffer(p, offers[idx]); rosaSellOffers.delete(id); invalidatePendingOfferFor(id); }
+                if (idx >= 0) { executeSellOffer(p, offers[idx]); rosaSellOffers.delete(id); invalidatePendingOfferFor(id); soldIds.add(id); }
                 render();
               }
             );
