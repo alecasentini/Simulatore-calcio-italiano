@@ -3496,7 +3496,11 @@ function displayStandings(containerId, standingsData, halfSeason = false) {
 }
 
 // Classifica pre-stagionale: squadre ordinate per forza, con obiettivo
-function displayPreSeasonStandings(containerId, teams) {
+// presorted=true: `teams` è già nell'ordine giusto (es. computePreseasonPrevisioni,
+// forza+budget+piazzamento) e non va riordinato per sola forza — usato per lo
+// sfondo del mercato estivo, dove si vuole la classifica di previsione/obiettivi
+// invece di un semplice ranking per forza.
+function displayPreSeasonStandings(containerId, teams, presorted = false) {
   const container = ensureLeagueSection(containerId);
   if (!container) return;
   const existing = document.getElementById(`classifica-${containerId}`);
@@ -3505,7 +3509,7 @@ function displayPreSeasonStandings(containerId, teams) {
   div.id = `classifica-${containerId}`;
   div.innerHTML = `<h2>Previsioni <em style="font-size:.75em;opacity:.6">(pre-stagione)</em></h2>`;
 
-  const sorted = [...teams].sort((a, b) => (b.strength || 0) - (a.strength || 0));
+  const sorted = presorted ? teams : [...teams].sort((a, b) => (b.strength || 0) - (a.strength || 0));
   const table = document.createElement('table');
   table.innerHTML = '<tr><th>#</th><th>Squadra</th><th>Forza</th><th>Obiettivo</th><th>Budget</th></tr>';
 
@@ -6550,6 +6554,15 @@ document.getElementById('simulaStagione').addEventListener('click', function () 
     setObjectives(previsioni.B, 'B');
     setObjectives(previsioni.C, 'C');
 
+    // Sfondo della pagina durante tutto il mercato estivo (Previsioni,
+    // briefing, turni): la classifica finale della stagione appena conclusa
+    // (ancora visibile da finishSeason) va sostituita con la classifica di
+    // previsione/obiettivi, non lasciata "vecchia" mentre si è già nella
+    // nuova stagione — resta finché non ripartono le giornate vere.
+    displayPreSeasonStandings('serieA', previsioni.A, true);
+    displayPreSeasonStandings('serieB', previsioni.B, true);
+    displayPreSeasonStandings('serieC', previsioni.C, true);
+
     // Il presidente deve fissare budget/monte ingaggi del player PRIMA che
     // parta il mercato a turni (sotto), non più dopo: da quando il player
     // partecipa al mercato a turni nel suo punto reale della coda (per forza
@@ -8351,10 +8364,14 @@ function runTurnBasedMarket(onComplete = () => {}, maxRounds = 40) {
       // Turno reale del player: si ferma qui, la SUA UI di mercato (quella
       // di sempre, non una finestra separata) decide, poi si riprende. Se
       // non ha bisogni reali quel turno, passa in automatico senza aprirla —
-      // TRANNE se manca l'allenatore: senza la sessione libera finale (§3,
-      // eliminata) questo turno è l'unica occasione garantita di scegliere
-      // un allenatore, non si può saltare in automatico.
-      if (getMarketTurnOptions(team, ctx).noNeedAtAll && playerTeam.coach) {
+      // TRANNE se manca l'allenatore, il budget è negativo o la rosa è sotto
+      // il minimo: senza la sessione libera finale (§3, eliminata) questo
+      // turno è l'unica occasione garantita di risolvere questi blocchi, non
+      // si può saltare in automatico (altrimenti il player resta bloccato
+      // con budget negativo per il resto della sessione, senza mai poter
+      // aprire la finestra per sistemarlo).
+      const needsAttention = !playerTeam.coach || playerTeam.budget < 0 || getEffectiveRosterCount(playerTeam) < PLAYER_ROSTER_MIN_TO_PROCEED;
+      if (getMarketTurnOptions(team, ctx).noNeedAtAll && !needsAttention) {
         turnMarketLog(team, 'nessun bisogno reale (né comprare né vendere) → turno saltato in automatico');
         setTimeout(processNext, TICK_DELAY_MS);
         return;
