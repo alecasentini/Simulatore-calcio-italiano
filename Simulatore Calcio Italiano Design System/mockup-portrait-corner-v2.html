@@ -1,0 +1,150 @@
+<meta charset="UTF-8">
+<title>Mockup — ritratto angolo (variante A, sfondo squadra + header spostato)</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+<style>
+  body {
+    margin: 0;
+    padding: 48px;
+    background: #1a1f2c;
+    display: flex;
+    gap: 48px;
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .demo-label {
+    color: #f0a013;
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    font-size: .8rem;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    margin-bottom: 14px;
+  }
+
+  /* Il vero .player-card-overlay è position:fixed a schermo intero — qui lo
+     forziamo relative/statico solo per poterlo mostrare inline nel mockup. */
+  .demo-wrap .player-card-overlay {
+    position: static;
+    display: block;
+    background: none;
+    padding: 0;
+  }
+
+  .demo-wrap .player-card-box {
+    position: relative;
+    width: 620px;
+    max-width: 620px;
+  }
+
+  /* ── Badge ritratto, angolo alto-sinistra ── */
+  .portrait-badge {
+    position: absolute;
+    top: -22px;
+    left: -22px;
+    width: 108px;
+    height: 108px;
+    padding: 6px;
+    box-sizing: border-box;
+    border: 3px solid #0d1420;
+    background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAANgAAADYCAIAAAAGQrq6AAADO0lEQVR4nO3dMWocQRBAUa1RanA44MT3P5UTw15A4NCBEgfroEEr/65+L5RHCoZPDxRF+/b12/XyTPdfPx/+/Pr+47/8fc8338+Xhz+FTyZEEoRIghBJECIJQiRBiCTcnj1HnMp89GPni05EEoRIghBJECIJQiRBiCQIkYTX1V8wP2vu812bP+9EJEGIJAiRBCGSIEQShEiCEEmwj/hJzF/f2UckzaeZBCGSIEQShEiCEEkQIgm3t7ffD//B/YV77fNdsedXORFJECIJQiRBiCQIkQQhkiBEEsbuI9r/a84X7SOS5tNMghBJECIJQiRBiCQIkTPuR/S89/M39yOS5tNMghBJECIJQiRBiCQIkYSx+4ir7C++s4/I0XyaSRAiCUIkQYgkCJEEIbLn/Yj2C2e8n1XuR+QIPs0kCJEEIZIgRBKESIIQOXsf0f5fc754uR+Rk/k0kyBEEoRIghBJECIJQiTBPuJm87b70P1FJyIJQiRBiCQIkQQhkiBEEoRIwjb3I9pfbM4X/X/NjOLTTIIQSRAiCUIkQYgkCJEE+4jReduqZ//9Z3MikiBEEoRIghBJECIJQiRBiLT3Ee3/NeeL19DnnYgkCJEEIZIgRBKESIIQSRAiCfYRN5u33YfuLzoRSRAiCUIkQYgkCJEEIZIgRGbdj2h/sTlfvDZ53olIghBJECIJQiRBiCQIkQQhkmAf8dD9vxonIglCJEGIJAiRBCGSIEQShMis+xE9f+b7WWUfkTSfZhKESIIQSRAiCUIkQYgk2EfcbN52H7q/6EQkQYgkCJEEIZIgRBKESIIQOft+RM+f+X7+xYlIghBJECIJQiRBiCQIkQQhkjB2H3HVaft/NU5EEoRIghBJECIJQiRBiCQIkQT3I242H72GzlOdiCQIkQQhkiBEEoRIghBJECIJY/cRp87bpnIikiBEEoRIghBJECIJQiRBiCTYR9xs3nkNnac6EUkQIglCJEGIJAiRBCGSIETO3kdcZf9vNiciCUIkQYgkCJEEIZIgRBKESIJ9xEP3/2qciCQIkQQhkiBEEoRIghBJECIJ29yPuGrqvG0qJyIJQiRBiCQIkQQhkiBEEoTIS8EfVroEIGQ2pBcAAAAASUVORK5CYII=);
+    background-size: cover;
+    image-rendering: pixelated;
+    box-shadow: 5px 5px 0 rgba(0, 0, 0, .45);
+    z-index: 5;
+  }
+
+  .portrait-badge img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: top center;
+    image-rendering: pixelated;
+    display: block;
+    border: 1px solid #0d1420;
+    box-sizing: border-box;
+  }
+
+  .portrait-badge::before {
+    content: '';
+    position: absolute;
+    top: -3px;
+    left: -3px;
+    width: 16px;
+    height: 16px;
+    background: #f0a013;
+    clip-path: polygon(0 0, 100% 0, 0 100%);
+  }
+
+  /* ── Sposta a destra le righe che il badge coprirebbe: intestazione
+     (bandiera+nome+ruolo) e le due righe di statistiche subito sotto.
+     Il badge occupa da x=-22 a x=86 rispetto al bordo della card — 90px di
+     margine lascia un piccolo respiro oltre il bordo del badge. Le sezioni
+     più sotto (Contratto/Personalità in poi) sono già fuori dall'ingombro
+     verticale del badge (che finisce a y=86) e restano invariate. ── */
+  .demo-wrap .player-card-header,
+  .demo-wrap .player-card-stats:nth-of-type(1),
+  .demo-wrap .player-card-stats:nth-of-type(2) {
+    margin-left: 90px;
+  }
+</style>
+
+<div>
+  <div class="demo-label">Variante A — sfondo squadra a dithering + header spostato</div>
+  <div class="demo-wrap">
+    <div class="player-card-overlay">
+      <div class="player-card-box">
+        <button class="player-card-close">✕</button>
+        <div class="portrait-badge">
+          <img src="preview/portrait_sample.png" alt="Ritratto">
+        </div>
+        <div class="player-card-scroll">
+          <div class="player-card-header">
+            <span class="flag-icon" style="display:inline-block;width:20px;height:14px;background:linear-gradient(90deg,#009246 33%,#fff 33% 66%,#ce2b37 66%)"></span>
+            <span class="player-card-name">Francesco Vicari</span>
+            <span class="player-card-role role-POR">POR</span>
+          </div>
+          <div class="player-card-stats">
+            <span>Età: <strong>25</strong></span>
+            <span>Forza: <strong>78</strong></span>
+            <span>Squadra: <strong>Juventus</strong></span>
+          </div>
+          <div class="player-card-stats" style="margin-top:4px">
+            <span>⚽ Gol: <strong>0</strong></span>
+            <span>🅰️ Assist: <strong>0</strong></span>
+            <span>🟨 Amm: <strong>0</strong></span>
+          </div>
+          <div class="pc-sections">
+            <div class="pc-section">
+              <h4>Contratto</h4>
+              <div class="pc-contract">
+                <div class="pc-contract-row"><span>Durata residua</span><strong>3 anni</strong></div>
+                <div class="pc-contract-row"><span>Stipendio</span><strong>1.04mln€/anno</strong></div>
+                <div class="pc-contract-row"><span>Clausola rescissoria</span><strong>Nessuna</strong></div>
+                <div class="pc-contract-row"><span>Bonus promozione</span><strong>66k€</strong></div>
+                <div class="pc-contract-row"><span>Bonus titolo</span><strong>172k€</strong></div>
+              </div>
+            </div>
+            <div class="pc-section">
+              <h4>Personalità</h4>
+              <div class="pc-personality">
+                <div class="pc-pers-row"><span>Ambizione</span><span class="pc-bar"><span style="width:72%"></span></span></div>
+                <div class="pc-pers-row"><span>Fedeltà</span><span class="pc-bar"><span style="width:45%"></span></span></div>
+                <div class="pc-pers-row"><span>Avidità</span><span class="pc-bar"><span style="width:38%"></span></span></div>
+              </div>
+            </div>
+          </div>
+          <h4>Statistiche per stagione</h4>
+          <table class="player-card-table">
+            <thead><tr><th>Stagione</th><th>Squadra</th><th>Serie</th><th>Presenze</th><th>Gol</th><th>Gol subiti</th></tr></thead>
+            <tbody></tbody>
+          </table>
+          <h4>Carriera</h4>
+          <table class="player-card-table">
+            <thead><tr><th>Squadra</th><th>Periodo</th><th>Durata</th><th>Fee</th></tr></thead>
+            <tbody><tr><td>Juventus</td><td>Inizio → attuale</td><td>0 st.</td><td>— (vivaio)</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

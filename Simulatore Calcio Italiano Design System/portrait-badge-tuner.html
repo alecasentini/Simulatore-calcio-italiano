@@ -1,0 +1,463 @@
+<meta charset="UTF-8">
+<title>Tuner badge ritratto — scheda giocatore</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+<style>
+  :root {
+    --panel: #1b2130;
+    --panel-border: #333c52;
+    --text: #e8ecf5;
+    --text-dim: #8b93a8;
+    --accent: #f0a013;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: #12161f;
+    color: var(--text);
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    display: flex;
+    min-height: 100vh;
+  }
+
+  #preview-col {
+    flex: 0 0 780px;
+    padding: 32px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+  }
+
+  #controls-col {
+    flex: 1;
+    padding: 24px 24px 60px;
+    overflow-y: auto;
+    max-height: 100vh;
+  }
+
+  h1 { font-size: 1.05rem; margin: 0; }
+
+  p.hint {
+    color: var(--text-dim);
+    font-size: .82rem;
+    margin: 0 0 16px;
+    max-width: 640px;
+    line-height: 1.5;
+  }
+
+  /* Sfondo puntinato dietro la card, per vedere bene dove sporge il badge */
+  #stage-bg {
+    width: 100%;
+    padding: 60px 20px;
+    background: repeating-conic-gradient(#232838 0% 25%, #1a1f2c 0% 50%) 50% / 24px 24px;
+    display: flex;
+    justify-content: center;
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+  }
+
+  .demo-wrap .player-card-overlay {
+    position: static;
+    display: block;
+    background: none;
+    padding: 0;
+  }
+
+  .demo-wrap .player-card-box {
+    position: relative;
+    width: 620px;
+    max-width: 620px;
+    overflow: visible;
+    /* Il body del tuner ha "color" chiaro per il proprio sfondo scuro
+       esterno — senza questo reset si eredita dentro la card, sbiancando
+       il testo (nome, tabelle...) che nel gioco vero è sempre scuro. */
+    color: var(--text-primary, #14162a);
+  }
+
+  fieldset {
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    margin: 0 0 16px;
+    padding: 12px 14px 16px;
+  }
+
+  legend {
+    font-size: .72rem;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--accent);
+    padding: 0 6px;
+  }
+
+  .slider-row {
+    display: grid;
+    grid-template-columns: 100px 1fr 56px;
+    align-items: center;
+    gap: 10px;
+    margin: 8px 0;
+  }
+
+  .slider-row label { font-size: .82rem; color: var(--text-dim); }
+
+  .slider-row output {
+    font-variant-numeric: tabular-nums;
+    font-size: .85rem;
+    text-align: right;
+  }
+
+  input[type="range"] { width: 100%; accent-color: var(--accent); }
+
+  select {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    padding: 6px 8px;
+    font-size: .85rem;
+    width: 100%;
+  }
+
+  #export-box {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    padding: 12px 14px;
+    font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+    font-size: .74rem;
+    white-space: pre;
+    overflow-x: auto;
+    color: #c9d4ea;
+    margin-top: 8px;
+  }
+
+  #reset-btn {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    padding: 8px 14px;
+    font-size: .82rem;
+    cursor: pointer;
+  }
+  #reset-btn:hover { border-color: var(--accent); }
+
+  /* ── Badge (aggiornato live dagli slider) ── */
+  .tuner-frame {
+    position: absolute;
+    box-sizing: border-box;
+    border: 3px solid #0d1420;
+    box-shadow: 5px 5px 0 rgba(0, 0, 0, .45);
+    z-index: 5;
+    overflow: hidden;
+  }
+
+  .tuner-frame::before {
+    content: '';
+    position: absolute;
+    top: -3px;
+    left: -3px;
+    width: 16px;
+    height: 16px;
+    background: var(--color-gold, #f0a013);
+    clip-path: polygon(0 0, 100% 0, 0 100%);
+    z-index: 3;
+  }
+
+  .tuner-dither {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    image-rendering: pixelated;
+    z-index: 0;
+  }
+
+  .tuner-crest-bg {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+  }
+
+  .tuner-crest-bg img {
+    position: absolute;
+    image-rendering: pixelated;
+  }
+
+  .tuner-photo-wrap {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    z-index: 1;
+  }
+
+  .tuner-photo-wrap img {
+    position: absolute;
+    image-rendering: auto;
+  }
+</style>
+
+<div id="preview-col">
+  <h1>Tuner badge ritratto</h1>
+  <div id="stage-bg">
+    <div class="demo-wrap">
+      <div class="player-card-overlay">
+        <div class="player-card-box">
+          <button class="player-card-close">✕</button>
+          <div class="tuner-frame" id="frame">
+            <canvas class="tuner-dither" id="dither" width="16" height="16"></canvas>
+            <div class="tuner-crest-bg" id="crestBg"><img id="crestImg" src="../assets/loghi/pixel/juventus.png" alt=""></div>
+            <div class="tuner-photo-wrap" id="photoWrap"><img id="photoImg" src="preview/portrait_sample.png" alt=""></div>
+          </div>
+          <div class="player-card-scroll">
+            <div class="player-card-header" id="headerRow">
+              <span class="flag-icon" style="display:inline-block;width:20px;height:14px;background:linear-gradient(90deg,#009246 33%,#fff 33% 66%,#ce2b37 66%)"></span>
+              <span class="player-card-name">Francesco Vicari</span>
+              <span class="player-card-role role-POR">POR</span>
+            </div>
+            <div class="player-card-stats" id="statsRow1">
+              <span>Età: <strong>25</strong></span>
+              <span>Forza: <strong>78</strong></span>
+              <span>Squadra: <strong>Juventus</strong></span>
+            </div>
+            <div class="player-card-stats" id="statsRow2" style="margin-top:4px">
+              <span>⚽ Gol: <strong>0</strong></span>
+              <span>🅰️ Assist: <strong>0</strong></span>
+              <span>🟨 Amm: <strong>0</strong></span>
+            </div>
+            <div class="pc-sections">
+              <div class="pc-section">
+                <h4>Contratto</h4>
+                <div class="pc-contract"><div class="pc-contract-row"><span>Durata residua</span><strong>3 anni</strong></div></div>
+              </div>
+              <div class="pc-section">
+                <h4>Personalità</h4>
+                <div class="pc-personality"><div class="pc-pers-row"><span>Ambizione</span><span class="pc-bar"><span style="width:72%"></span></span></div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <button id="reset-btn" type="button">Ripristina valori originali</button>
+</div>
+
+<div id="controls-col">
+  <p class="hint">
+    Tutto qui sotto si aggiorna in tempo reale sulla card a sinistra —
+    inclusa la finestra vera del gioco (stesso CSS). Quando trovi la
+    combinazione che ti piace, copiami il riquadro in fondo.
+  </p>
+
+  <fieldset>
+    <legend>Riquadro (dimensione e posizione rispetto alla finestra)</legend>
+    <div class="slider-row">
+      <label>Dimensione</label>
+      <input type="range" id="frameSize" min="60" max="180" value="108">
+      <output id="frameSize-out">108px</output>
+    </div>
+    <div class="slider-row">
+      <label>Sposta X (dalla finestra)</label>
+      <input type="range" id="frameLeft" min="-60" max="40" value="-22">
+      <output id="frameLeft-out">-22px</output>
+    </div>
+    <div class="slider-row">
+      <label>Sposta Y (dalla finestra)</label>
+      <input type="range" id="frameTop" min="-60" max="40" value="-22">
+      <output id="frameTop-out">-22px</output>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Sfondo</legend>
+    <div class="slider-row">
+      <label>Tipo</label>
+      <select id="bgType">
+        <option value="dither">Dithering colori squadra</option>
+        <option value="crest-white">Bianco + stemma</option>
+        <option value="crest-gray">Grigio chiaro + stemma</option>
+      </select>
+      <span></span>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Giocatore (dentro il riquadro)</legend>
+    <div class="slider-row">
+      <label>Scala</label>
+      <input type="range" id="photoScale" min="50" max="200" value="100">
+      <output id="photoScale-out">100%</output>
+    </div>
+    <div class="slider-row">
+      <label>Sposta X</label>
+      <input type="range" id="photoX" min="-60" max="60" value="0">
+      <output id="photoX-out">0px</output>
+    </div>
+    <div class="slider-row">
+      <label>Sposta Y</label>
+      <input type="range" id="photoY" min="-60" max="60" value="0">
+      <output id="photoY-out">0px</output>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Stemma squadra (solo sfondi "+ stemma")</legend>
+    <div class="slider-row">
+      <label>Scala</label>
+      <input type="range" id="crestScale" min="40" max="220" value="92">
+      <output id="crestScale-out">92%</output>
+    </div>
+    <div class="slider-row">
+      <label>Sposta X</label>
+      <input type="range" id="crestX" min="-60" max="60" value="0">
+      <output id="crestX-out">0px</output>
+    </div>
+    <div class="slider-row">
+      <label>Sposta Y</label>
+      <input type="range" id="crestY" min="-60" max="60" value="0">
+      <output id="crestY-out">0px</output>
+    </div>
+    <div class="slider-row">
+      <label>Opacità</label>
+      <input type="range" id="crestOpacity" min="5" max="100" value="35">
+      <output id="crestOpacity-out">35%</output>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Valori attuali (da incollare in chat)</legend>
+    <div id="export-box"></div>
+  </fieldset>
+</div>
+
+<script>
+const DEFAULTS = {
+  frameSize: 108, frameLeft: -22, frameTop: -22,
+  bgType: 'dither',
+  photoScale: 100, photoX: 0, photoY: 0,
+  crestScale: 92, crestX: 0, crestY: 0, crestOpacity: 35,
+};
+const STORAGE_KEY = 'portrait-badge-tuner';
+let state = { ...DEFAULTS };
+try {
+  const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+  state = { ...DEFAULTS, ...saved };
+} catch (e) {}
+
+const DITHER_BAYER_4X4 = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
+function drawDitherBadge(canvas, color1, color2) {
+  const n = canvas.width;
+  const ctx = canvas.getContext('2d');
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      const t = (x + y) / (2 * (n - 1));
+      const thresh = DITHER_BAYER_4X4[y % 4][x % 4] / 16;
+      ctx.fillStyle = t > thresh ? color2 : color1;
+      ctx.fillRect(x, y, 1, 1);
+    }
+  }
+}
+drawDitherBadge(document.getElementById('dither'), '#000000', '#FFFFFF');
+
+const frame = document.getElementById('frame');
+const ditherCanvas = document.getElementById('dither');
+const crestBg = document.getElementById('crestBg');
+const crestImg = document.getElementById('crestImg');
+const photoWrap = document.getElementById('photoWrap');
+const photoImg = document.getElementById('photoImg');
+const headerRow = document.getElementById('headerRow');
+const statsRow1 = document.getElementById('statsRow1');
+const statsRow2 = document.getElementById('statsRow2');
+
+function render() {
+  frame.style.width = state.frameSize + 'px';
+  frame.style.height = state.frameSize + 'px';
+  frame.style.left = state.frameLeft + 'px';
+  frame.style.top = state.frameTop + 'px';
+
+  const isDither = state.bgType === 'dither';
+  ditherCanvas.style.display = isDither ? 'block' : 'none';
+  crestBg.style.display = isDither ? 'none' : 'block';
+  frame.style.background = state.bgType === 'crest-white' ? '#ffffff'
+    : state.bgType === 'crest-gray' ? '#e4e7ee' : '';
+
+  const cs = state.crestScale / 100;
+  crestImg.style.width = (cs * 100) + '%';
+  crestImg.style.height = (cs * 100) + '%';
+  crestImg.style.left = `calc(50% - ${cs * 50}% + ${state.crestX}px)`;
+  crestImg.style.top = `calc(50% - ${cs * 50}% + ${state.crestY}px)`;
+  crestImg.style.opacity = state.crestOpacity / 100;
+
+  const ps = state.photoScale / 100;
+  photoImg.style.width = (ps * 100) + '%';
+  photoImg.style.height = (ps * 100) + '%';
+  photoImg.style.left = `calc(50% - ${ps * 50}% + ${state.photoX}px)`;
+  photoImg.style.top = `calc(50% - ${ps * 50}% + ${state.photoY}px)`;
+
+  // Header/statistiche spostate quanto basta per non essere coperte dal
+  // badge (stessa logica del gioco reale: fine del badge + un margine).
+  const clearance = Math.max(0, state.frameLeft + state.frameSize) + 6;
+  headerRow.style.marginLeft = clearance + 'px';
+  statsRow1.style.marginLeft = clearance + 'px';
+  statsRow2.style.marginLeft = clearance + 'px';
+
+  updateExport();
+  persist();
+}
+
+function persist() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+
+function updateExport() {
+  document.getElementById('export-box').textContent =
+`frame:  size=${state.frameSize}px  left=${state.frameLeft}px  top=${state.frameTop}px
+sfondo: ${state.bgType}
+foto:   scale=${state.photoScale}%  x=${state.photoX}px  y=${state.photoY}px
+stemma: scale=${state.crestScale}%  x=${state.crestX}px  y=${state.crestY}px  opacity=${state.crestOpacity}%`;
+}
+
+function bindSlider(id, key, suffix) {
+  const input = document.getElementById(id);
+  const out = document.getElementById(id + '-out');
+  input.value = state[key];
+  out.textContent = state[key] + suffix;
+  input.addEventListener('input', () => {
+    state[key] = Number(input.value);
+    out.textContent = state[key] + suffix;
+    render();
+  });
+}
+bindSlider('frameSize', 'frameSize', 'px');
+bindSlider('frameLeft', 'frameLeft', 'px');
+bindSlider('frameTop', 'frameTop', 'px');
+bindSlider('photoScale', 'photoScale', '%');
+bindSlider('photoX', 'photoX', 'px');
+bindSlider('photoY', 'photoY', 'px');
+bindSlider('crestScale', 'crestScale', '%');
+bindSlider('crestX', 'crestX', 'px');
+bindSlider('crestY', 'crestY', 'px');
+bindSlider('crestOpacity', 'crestOpacity', '%');
+
+const bgSelect = document.getElementById('bgType');
+bgSelect.value = state.bgType;
+bgSelect.addEventListener('change', () => { state.bgType = bgSelect.value; render(); });
+
+document.getElementById('reset-btn').addEventListener('click', () => {
+  state = { ...DEFAULTS };
+  bgSelect.value = state.bgType;
+  Object.entries({
+    frameSize: 'px', frameLeft: 'px', frameTop: 'px',
+    photoScale: '%', photoX: 'px', photoY: 'px',
+    crestScale: '%', crestX: 'px', crestY: 'px', crestOpacity: '%',
+  }).forEach(([key, suffix]) => {
+    document.getElementById(key).value = state[key];
+    document.getElementById(key + '-out').textContent = state[key] + suffix;
+  });
+  render();
+});
+
+render();
+</script>

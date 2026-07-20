@@ -1,0 +1,821 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Simulatore Calcio Italiano — UI Kit</title>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: sans-serif; background: #f0f0f0; min-height: 100vh; }
+table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+th, td { border: 1px solid #ddd; padding: 8px; text-align: center; font-size: .85rem; }
+th { background: #f2f2f2; font-size: .75rem; color: #555; font-weight: 600; }
+.promo { background: #d4edda; }
+.relega { background: #f8d7da; }
+.myteam td { background: #e8f2ff; color: #1a4a8a; font-weight: 600; }
+details { border: 1px solid #ccc; border-radius: 5px; background: #fff; overflow: hidden; margin-bottom: 6px; }
+summary { background: #eee; padding: 10px; cursor: pointer; font-weight: bold; display: flex; justify-content: space-between; align-items: center; list-style: none; user-select: none; }
+summary::after { content: '▼'; font-size: .8em; transition: transform .2s; }
+details[open] summary::after { transform: rotate(180deg); }
+.rounds-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; margin-top: 14px; align-items: start; }
+.match-row { display: grid; grid-template-columns: 1fr 46px 1fr; align-items: center; padding: 3px 0; border-bottom: 1px solid #f9f9f9; font-size: .85rem; cursor: pointer; transition: background .1s; }
+.match-row:hover { background: #f0f4ff; }
+.match-row span:first-child { text-align: right; padding-right: 4px; }
+.match-row span:nth-child(2) { text-align: center; font-weight: 700; background: #f1f1f1; border-radius: 4px; padding: 2px 0; font-size: .82rem; }
+.match-row span:last-child { text-align: left; padding-left: 4px; }
+.my-match { background: #e8f2ff; }
+.my-match span { color: #1a4a8a; }
+.my-match span:nth-child(2) { color: #000; }
+.section-sep { margin-top: 40px; padding-top: 20px; border-top: 4px solid #eee; }
+.overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 2000; display: flex; justify-content: center; align-items: center; padding: 20px; }
+.modal { background: #fff; padding: 24px 28px; border-radius: 8px; box-shadow: 0 5px 15px rgba(0,0,0,.3); width: 100%; max-width: 580px; max-height: 85vh; overflow-y: auto; position: relative; }
+.modal-close { position: absolute; top: 10px; right: 14px; font-size: 26px; font-weight: bold; color: #aaa; cursor: pointer; background: none; border: none; line-height: 1; }
+.modal-close:hover { color: #000; }
+.mm-box { background: #fff; border-radius: 12px; overflow: hidden; box-shadow: 0 12px 40px rgba(0,0,0,.35); width: 100%; max-width: 680px; max-height: 88vh; display: flex; flex-direction: column; }
+.mm-header { display: flex; justify-content: space-between; align-items: center; padding: 14px 20px; background: #0d1b2a; color: #fff; flex-shrink: 0; }
+.mm-title { font-size: 1.05rem; font-weight: 700; }
+.mm-budget { font-size: .88rem; color: #acd; }
+.mm-tabs { display: flex; border-bottom: 2px solid #dde2ec; flex-shrink: 0; background: #f7f9fc; }
+.mm-tab { flex: 1; padding: 10px 8px; border: none; background: none; cursor: pointer; font-size: .85rem; color: #555; border-bottom: 3px solid transparent; margin-bottom: -2px; transition: color .15s, border-color .15s; }
+.mm-tab.active { color: #1a4a8a; border-bottom-color: #1a4a8a; font-weight: 700; }
+.mm-tab:hover:not(.active) { color: #1a4a8a; background: #eef2fb; }
+.mm-content { flex: 1; overflow-y: auto; padding: 12px 16px; }
+.mm-row { display: flex; justify-content: space-between; align-items: center; padding: 9px 10px; border-radius: 7px; margin-bottom: 6px; background: #f4f6fa; gap: 10px; }
+.mm-row.done { background: #eefaf0; font-size: .88rem; color: #555; }
+.mm-pinfo { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font-size: .88rem; flex: 1; }
+.mm-name { font-weight: 700; color: #1a2e45; }
+.mm-badge { background: #e8eef8; color: #1a6fc4; padding: 1px 7px; border-radius: 4px; font-size: .78rem; font-weight: 600; }
+.mm-meta { color: #666; font-size: .82rem; }
+.mm-acts { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.mm-price { font-size: .95rem; color: #1a2e45; white-space: nowrap; font-weight: 700; }
+.mm-footer { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; border-top: 1px solid #dde2ec; background: #f7f9fc; flex-shrink: 0; }
+.mm-empty { color: #888; font-style: italic; text-align: center; padding: 24px 0; font-size: .88rem; }
+button.btn-confirm { background: #1a4a8a; color: #fff; padding: 9px 20px; border-radius: 7px; border: none; font-size: .92rem; font-weight: 700; cursor: pointer; }
+button.btn-confirm:hover { background: #0d3060; }
+button.btn-green { padding: 5px 12px; background: #2ecc71; color: #fff; border-radius: 5px; border: none; font-size: .82rem; font-weight: 600; cursor: pointer; }
+button.btn-green:hover { background: #27ae60; }
+button.btn-red   { padding: 5px 12px; background: #e74c3c; color: #fff; border-radius: 5px; border: none; font-size: .82rem; font-weight: 600; cursor: pointer; }
+button.btn-blue  { padding: 5px 12px; background: #2980b9; color: #fff; border-radius: 5px; border: none; font-size: .82rem; font-weight: 600; cursor: pointer; }
+.team-cell { display: flex; align-items: center; gap: 6px; }
+.jersey { display: inline-block; width: 14px; height: 14px; border: 1px solid #555; border-radius: 3px; flex-shrink: 0; }
+.clickable { cursor: pointer; color: #1a6fc4; text-decoration: underline; font-weight: 700; }
+.clickable:hover { color: #0056b3; }
+.ts-team-btn { display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px 12px; margin-bottom: 5px; background: #1a2e45; border: 1px solid #2a4060; border-radius: 7px; color: #dce8f5; cursor: pointer; font-size: .88rem; text-align: left; transition: background .15s, border-color .15s; }
+.ts-team-btn:hover { background: #1e4070; border-color: #5599ee; }
+.db-tab-btn { padding: 6px 14px; border: 1px solid #ccc; border-radius: 4px; background: #f5f5f5; cursor: pointer; font-size: .88rem; }
+.db-tab-btn.active { background: #007bff; color: #fff; border-color: #007bff; }
+.highlight-block { border: 2px solid #007bff; border-radius: 8px; padding: 12px; margin: 10px 0; background: #f0f7ff; }
+.coppa-badge { display: inline-block; background: gold; padding: 4px 12px; border-radius: 4px; font-weight: bold; margin-left: 10px; font-size: .88em; }
+.transfer-entry { padding: 4px 8px; border-bottom: 1px solid #f0f0f0; font-size: .85em; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+// ── DATA ─────────────────────────────────────────────────────────────────────
+const TEAMS_A = [
+  { name:'Juventus',      colors:['#ffffff','#000000'] },
+  { name:'Inter',         colors:['#0055A4','#000000'] },
+  { name:'Milan',         colors:['#AC0D0D','#000000'] },
+  { name:'Roma',          colors:['#8A1E12','#000000'] },
+  { name:'Napoli',        colors:['#6CB4E4','#6CB4E4'] },
+  { name:'Lazio',         colors:['#87CEEB','#001E5E'] },
+  { name:'Atalanta',      colors:['#0055A4','#000000'] },
+  { name:'Fiorentina',    colors:['#482E80','#ffffff'] },
+  { name:'Sampdoria',     colors:['#003282','#003282'] },
+  { name:'Genoa',         colors:['#D2232A','#001F49'] },
+  { name:'Udinese',       colors:['#ffffff','#000000'] },
+  { name:'Bologna',       colors:['#9f142d','#1b2f56'] },
+  { name:'Sassuolo',      colors:['#000000','#008E55'] },
+  { name:'Cagliari',      colors:['#c0001a','#002b5c'] },
+  { name:'Torino',        colors:['#8a1e2a','#ffffff'] },
+  { name:'Parma',         colors:['#FFF300','#001A72'] },
+  { name:'Hellas Verona', colors:['#002D62','#FFD700'] },
+  { name:'Palermo',       colors:['#FF1493','#000000'] },
+  { name:'Bari',          colors:['#ffffff','#ED1C24'] },
+  { name:'Vicenza',       colors:['#ffffff','#E30613'] }
+];
+const TEAMS_B = [
+  { name:'Empoli',        colors:['#005CB9','#ffffff'] },
+  { name:'Salernitana',   colors:['#7A1429','#000000'] },
+  { name:'Lecce',         colors:['#FFD700','#DA291C'] },
+  { name:'Venezia',       colors:['#FC4C02','#000000'] },
+  { name:'Cittadella',    colors:['#AF002D','#ffffff'] },
+  { name:'Monza',         colors:['#E30613','#ffffff'] },
+  { name:'Pisa',          colors:['#000000','#5594D0'] },
+  { name:'Chievo',        colors:['#FFD700','#005CB9'] },
+  { name:'Ascoli',        colors:['#000000','#ffffff'] },
+  { name:'Brescia',       colors:['#003087','#ffffff'] },
+  { name:'Varese',        colors:['#ffffff','#E30613'] },
+  { name:'Cremonese',     colors:['#aaaaaa','#E30613'] },
+  { name:'SPAL',          colors:['#005CB9','#ffffff'] },
+  { name:'Reggina',       colors:['#800000','#000000'] },
+  { name:'Triestina',     colors:['#E30613','#ffffff'] },
+  { name:'Cosenza',       colors:['#D71920','#002D62'] },
+  { name:'Entella',       colors:['#005CB9','#ffffff'] },
+  { name:'Reggiana',      colors:['#AC0D0D','#000000'] },
+  { name:'Frosinone',     colors:['#FFD700','#005CB9'] },
+  { name:'Como',          colors:['#002D62','#ffffff'] }
+];
+const TEAMS_C = [
+  { name:'Avellino',      colors:['#006837','#ffffff'] },
+  { name:'Benevento',     colors:['#DA291C','#FFD700'] },
+  { name:'Catania',       colors:['#DA291C','#005CB9'] },
+  { name:'Ternana',       colors:['#E30613','#008000'] },
+  { name:'Lecco',         colors:['#002D62','#87CEEB'] },
+  { name:'Padova',        colors:['#ffffff','#E30613'] },
+  { name:'Cesena',        colors:['#000000','#ffffff'] },
+  { name:'Modena',        colors:['#FFD700','#003087'] },
+  { name:'Perugia',       colors:['#E30613','#ffffff'] },
+  { name:'Alessandria',   colors:['#808080','#000000'] },
+  { name:'Novara',        colors:['#005CB9','#ffffff'] },
+  { name:'Catanzaro',     colors:['#FFD700','#DA291C'] },
+  { name:'Siena',         colors:['#000000','#007A33'] },
+  { name:'Foggia',        colors:['#DA291C','#000000'] },
+  { name:'Pro Patria',    colors:['#ffffff','#002D62'] },
+  { name:'Piacenza',      colors:['#E30613','#ffffff'] },
+  { name:'Lucchese',      colors:['#DA291C','#000000'] },
+  { name:'Livorno',       colors:['#800000','#FFD700'] },
+  { name:'Pescara',       colors:['#87CEEB','#000000'] },
+  { name:'Messina',       colors:['#FFD700','#DA291C'] }
+];
+
+function rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+function poisson(l) { const L=Math.exp(-l); let k=0,p=1; do{k++;p*=Math.random();}while(p>L); return k-1; }
+const NAMES = ['Marco','Luca','Andrea','Matteo','Francesco','Alessandro','Lorenzo','Federico','Simone','Riccardo'];
+const SURNAMES = ['Rossi','Ferrari','Romano','Bianchi','Esposito','Greco','Conti','Gallo','Mancini','Ricci','Baresi','Maldini','Totti','Del Piero','Pirlo','Zanetti'];
+const fn = () => NAMES[rand(0,NAMES.length-1)];
+const ln = () => SURNAMES[rand(0,SURNAMES.length-1)];
+
+function makeRoster(str) {
+  const roles = [...Array(2).fill('POR'), ...Array(7).fill('DIF'), ...Array(7).fill('CEN'), ...Array(5).fill('ATT')];
+  return roles.map((role,i) => ({
+    id: i, firstName: fn(), lastName: ln(), age: rand(18,35), role,
+    strength: Math.max(1, Math.min(99, str + rand(-12,12))),
+    contract: { duration: rand(1,4), salary: rand(20,90) },
+    personality: { ambition: rand(0,100), loyalty: rand(0,100), greed: rand(0,100) },
+    seasonGoals: 0, seasonAssists: 0
+  }));
+}
+
+function buildLeague(teams, strMin, strMax, budMin, budMax, level) {
+  return teams.map((t, i) => {
+    const str = strMax - Math.round((i/(teams.length-1))*(strMax-strMin));
+    const bud = budMax - Math.round((i/(teams.length-1))*(budMax-budMin));
+    const roster = makeRoster(str);
+    return {
+      ...t, strength: str, budget: bud, leagueLevel: level,
+      roster,
+      coach: { firstName: fn(), lastName: ln(), strength: rand(40,85), formation: ['4-4-2','4-3-3','3-5-2'][rand(0,2)] },
+      standing: { pts:0, w:0, d:0, l:0, gf:0, ga:0 }
+    };
+  });
+}
+
+function makeSchedule(teams) {
+  const t = [...teams]; if(t.length%2!==0) t.push({name:'Day off'});
+  const n=t.length-1, h=t.length/2, rounds=[];
+  const tc=[...t]; tc.splice(0,0,tc.pop());
+  for(let d=0;d<n;d++){
+    const r=[];
+    for(let i=0;i<h;i++) r.push(d%2===0?{t1:tc[i],t2:tc[tc.length-i-1]}:{t1:tc[tc.length-i-1],t2:tc[i]});
+    tc.splice(1,0,tc.pop()); rounds.push(r);
+  }
+  return rounds;
+}
+
+function simMatch(t1, t2) {
+  const s1=t1.strength||50, s2=t2.strength||50;
+  const r=1/(1+Math.exp(-(s1-s2)*0.07));
+  const g1=poisson(2.6*r+0.15), g2=poisson(2.6*(1-r));
+  const scorers1=[], scorers2=[];
+  const r1=t1.roster||[], r2=t2.roster||[];
+  const atts1=r1.filter(p=>p.role==='ATT'), atts2=r2.filter(p=>p.role==='ATT');
+  for(let i=0;i<g1;i++){const p=atts1[rand(0,Math.max(0,atts1.length-1))]; if(p){p.seasonGoals=(p.seasonGoals||0)+1; scorers1.push(p);}}
+  for(let i=0;i<g2;i++){const p=atts2[rand(0,Math.max(0,atts2.length-1))]; if(p){p.seasonGoals=(p.seasonGoals||0)+1; scorers2.push(p);}}
+  return {g1,g2,scorers1,scorers2};
+}
+
+function updateStanding(team, gf, ga) {
+  const s=team.standing; s.gf+=gf; s.ga+=ga;
+  if(gf>ga){s.pts+=3;s.w++;}else if(gf===ga){s.pts+=1;s.d++;}else{s.l++;}
+}
+
+// ── COMPONENTS ───────────────────────────────────────────────────────────────
+
+const TEAM_PATTERNS = {
+  'Juventus':'vstripes','Inter':'vstripes','Milan':'vstripes','Atalanta':'vstripes',
+  'Udinese':'vstripes','Bologna':'vstripes','Sassuolo':'vstripes','Vicenza':'vstripes',
+  'Sampdoria':'sash','Livorno':'sash',
+  'Genoa':'hstripes','Benevento':'hstripes','Ternana':'hstripes','Varese':'hstripes',
+  'Hellas Verona':'half','Palermo':'half','Chievo':'half','Ascoli':'half',
+  'Cosenza':'half','Frosinone':'half','Catania':'half','Siena':'half',
+  'Messina':'half',
+  'Lecce':'vstripes','Monza':'vstripes','SPAL':'vstripes','Cremonese':'vstripes',
+  'Entella':'vstripes','Padova':'vstripes','Cesena':'vstripes',
+};
+
+let _jerseyIdCounter = 0;
+const lum = (hex) => { try { const r=parseInt(hex.slice(1,3)||'99',16),g=parseInt(hex.slice(3,5)||'99',16),b=parseInt(hex.slice(5,7)||'99',16); return (r*299+g*587+b*114)/1000; } catch(e){return 128;} };
+
+function Jersey({name, colors, size=28}) {
+  const [c1, c2] = colors || ['#ccc','#999'];
+  const pattern = TEAM_PATTERNS[name] || 'solid';
+  const uid = `j${++_jerseyIdCounter}`;
+  const sid = `s${uid}`;
+  const stroke = lum(c1)>160 && lum(c2)>160 ? '#aaa' : '#fff';
+  const shortsStroke = lum(c2)>160 ? '#aaa' : '#fff';
+  // viewBox 0 0 44 70 — jersey 0-47, shorts 48-68
+  return (
+    <svg viewBox="0 0 44 70" width={size} height={Math.round(size*70/44)} xmlns="http://www.w3.org/2000/svg" style={{flexShrink:0,display:'block'}}>
+      <defs>
+        {/* Jersey patterns */}
+        {pattern==='vstripes' && <pattern id={uid} x="0" y="0" width="8" height="48" patternUnits="userSpaceOnUse"><rect x="0" y="0" width="4" height="48" fill={c1}/><rect x="4" y="0" width="4" height="48" fill={c2}/></pattern>}
+        {pattern==='hstripes' && <pattern id={uid} x="0" y="0" width="44" height="8" patternUnits="userSpaceOnUse"><rect x="0" y="0" width="44" height="4" fill={c1}/><rect x="0" y="4" width="44" height="4" fill={c2}/></pattern>}
+        {pattern==='half'     && <linearGradient id={uid} x1="0" y1="0" x2="1" y2="0"><stop offset="50%" stopColor={c1}/><stop offset="50%" stopColor={c2}/></linearGradient>}
+        {pattern==='sash'     && <linearGradient id={uid} x1="0.2" y1="0" x2="0.8" y2="1"><stop offset="30%" stopColor={c1}/><stop offset="30%" stopColor={c2}/><stop offset="70%" stopColor={c2}/><stop offset="70%" stopColor={c1}/></linearGradient>}
+      </defs>
+
+      {/* Drop shadow — jersey */}
+      <path d="M20,3 C17,2 15,4 15,6 L5,10 L1,22 L1,28 L10,26 L10,47 L34,47 L34,26 L43,28 L43,22 L39,10 L29,6 C29,4 27,2 24,3 Q22,4 20,3 Z"
+            fill="rgba(0,0,0,0.13)" transform="translate(1,2)"/>
+      {/* Jersey body */}
+      <path d="M20,2 C17,1 15,3 15,5 L5,9 L1,21 L1,27 L10,25 L10,47 L34,47 L34,25 L43,27 L43,21 L39,9 L29,5 C29,3 27,1 24,2 Q22,3 20,2 Z"
+            fill={pattern&&pattern!=='solid'?`url(#${uid})`:c1} stroke={stroke} strokeWidth="1"/>
+      {/* Sleeve seams */}
+      <line x1="10" y1="25" x2="10" y2="10" stroke="rgba(0,0,0,0.10)" strokeWidth=".8"/>
+      <line x1="34" y1="25" x2="34" y2="10" stroke="rgba(0,0,0,0.10)" strokeWidth=".8"/>
+      {/* Collar */}
+      <path d="M15,5 Q20,10 29,5" fill="none" stroke={stroke} strokeWidth="1.2" strokeLinecap="round"/>
+
+      {/* Drop shadow — shorts */}
+      <path d="M11,49 L11,68 L21,68 Q22,58 23,68 L33,68 L33,49 Z"
+            fill="rgba(0,0,0,0.13)" transform="translate(1,2)"/>
+      {/* Shorts */}
+      <path d="M11,48 L11,67 L21,67 Q22,57 23,67 L33,67 L33,48 Z"
+            fill={c2} stroke={shortsStroke} strokeWidth="1" strokeLinejoin="round"/>
+      {/* Waistband */}
+      <line x1="11" y1="51" x2="33" y2="51" stroke="rgba(0,0,0,0.10)" strokeWidth="1"/>
+    </svg>
+  );
+}
+
+// Team Selection overlay
+function TeamSelection({onSelect}) {
+  return (
+    <div style={{position:'fixed',inset:0,background:'#0d1b2a',zIndex:9000,overflowY:'auto',padding:'30px 20px 40px',display:'flex',flexDirection:'column',alignItems:'center'}}>
+      <h1 style={{color:'#fff',fontSize:'1.8rem',marginBottom:6}}>Simulatore Calcio Italiano</h1>
+      <p style={{color:'#8ab',marginBottom:24,fontSize:'1rem'}}>Scegli la tua squadra per iniziare la stagione</p>
+      <div style={{display:'flex',gap:20,flexWrap:'wrap',justifyContent:'center',width:'100%',maxWidth:900}}>
+        {[{label:'Serie A',teams:TEAMS_A},{label:'Serie B',teams:TEAMS_B},{label:'Serie C',teams:TEAMS_C}].map(({label,teams})=>(
+          <div key={label} style={{flex:1,minWidth:220}}>
+            <h2 style={{color:'#f0c040',fontSize:'0.9rem',textTransform:'uppercase',letterSpacing:'.08em',margin:'0 0 10px',textAlign:'center'}}>{label}</h2>
+            {teams.map(t=>(
+              <button key={t.name} className="ts-team-btn" onClick={()=>onSelect(t,label.replace('Serie ',''))}>
+                <Jersey name={t.name} colors={t.colors} size={22} />
+                {t.name}
+              </button>
+            ))}
+          </div>
+        ))}
+      </div>
+      <button onClick={()=>onSelect(null,'spectator')} style={{marginTop:24,background:'none',border:'1px solid #4a6080',color:'#8ab',padding:'8px 20px',borderRadius:6,cursor:'pointer',fontSize:'.9rem'}}>
+        Gioca come spettatore →
+      </button>
+    </div>
+  );
+}
+
+// Standings Table
+function StandingsTable({teams, leagueLabel, myTeamName, onClickTeam}) {
+  const sorted = [...teams].sort((a,b)=>{
+    const sa=a.standing, sb=b.standing;
+    if(sb.pts!==sa.pts) return sb.pts-sa.pts;
+    return (sb.gf-sb.ga)-(sa.gf-sa.ga);
+  });
+  const promoCount = leagueLabel==='A'?0:3;
+  const relegCount = leagueLabel==='C'?0:3;
+  return (
+    <table>
+      <thead><tr><th>#</th><th style={{textAlign:'left'}}>Squadra</th><th>Pt</th><th>G</th><th>V</th><th>N</th><th>P</th><th>GF</th><th>GS</th><th>DR</th></tr></thead>
+      <tbody>
+        {sorted.map((t,i)=>{
+          const s=t.standing, g=s.w+s.d+s.l, dr=s.gf-s.ga;
+          const isPromo = promoCount>0 && i<promoCount;
+          const isRelega = relegCount>0 && i>=sorted.length-relegCount;
+          const isMy = t.name===myTeamName;
+          return (
+            <tr key={t.name} className={isMy?'myteam':isPromo?'promo':isRelega?'relega':''}>
+              <td>{i+1}</td>
+              <td><div style={{display:'flex',alignItems:'center',gap:6}}><Jersey name={t.name} colors={t.colors} size={22}/><span className="clickable" onClick={()=>onClickTeam&&onClickTeam(t)}>{t.name}</span></div></td>
+              <td><strong>{s.pts}</strong></td><td>{g}</td><td>{s.w}</td><td>{s.d}</td><td>{s.l}</td>
+              <td>{s.gf}</td><td>{s.ga}</td><td>{dr>0?'+':''}{dr}</td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+// Single matchday highlight
+function MatchdayHighlight({round, matchday, myTeamName, onClickMatch}) {
+  if(!round) return null;
+  const matches = round.filter(m=>m.t1.name!=='Day off'&&m.t2.name!=='Day off'&&m.result);
+  return (
+    <div className="highlight-block">
+      <h3 style={{marginBottom:8,fontSize:'.95rem'}}>Giornata {matchday}</h3>
+      {matches.map((m,i)=>{
+        const isMy = myTeamName&&(m.t1.name===myTeamName||m.t2.name===myTeamName);
+        const s1=(m.result.scorers1||[]).map(p=>p.lastName).join(', ');
+        const s2=(m.result.scorers2||[]).map(p=>p.lastName).join(', ');
+        return (
+          <div key={i}>
+            <div className={`match-row${isMy?' my-match':''}`} onClick={()=>onClickMatch&&onClickMatch(m)}>
+              <span>{m.t1.name}</span>
+              <span>{m.result.g1}–{m.result.g2}</span>
+              <span>{m.t2.name}</span>
+            </div>
+            {(s1||s2)&&<div style={{display:'grid',gridTemplateColumns:'1fr 46px 1fr',fontSize:'.72rem',color:'#888',marginBottom:2}}>
+              <span style={{textAlign:'right',paddingRight:4}}>{s1}</span><span/><span style={{paddingLeft:4}}>{s2}</span>
+            </div>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// All rounds grid
+function RoundsGrid({rounds}) {
+  const played = rounds.filter(r=>r.some(m=>m.result));
+  if(!played.length) return null;
+  return (
+    <div className="rounds-grid">
+      {played.map((round,i)=>(
+        <details key={i}>
+          <summary>Giornata {i+1}</summary>
+          <div style={{padding:'8px',fontSize:'.85rem'}}>
+            {round.filter(m=>m.t1.name!=='Day off'&&m.result).map((m,j)=>(
+              <div key={j} className="match-row">
+                <span>{m.t1.name}</span><span>{m.result.g1}–{m.result.g2}</span><span>{m.t2.name}</span>
+              </div>
+            ))}
+          </div>
+        </details>
+      ))}
+    </div>
+  );
+}
+
+// Match Detail Modal
+function MatchDetailModal({match, onClose}) {
+  if(!match||!match.result) return null;
+  const r=match.result;
+  const events = [
+    ...((r.scorers1||[]).map(p=>({type:'goal',team:match.t1.name,scorer:p,minute:rand(1,90)}))),
+    ...((r.scorers2||[]).map(p=>({type:'goal',team:match.t2.name,scorer:p,minute:rand(1,90)}))),
+  ].sort((a,b)=>a.minute-b.minute);
+  return (
+    <div className="overlay" onClick={e=>{if(e.target===e.currentTarget)onClose();}}>
+      <div className="modal" style={{maxWidth:540}}>
+        <button className="modal-close" onClick={onClose}>×</button>
+        <div style={{display:'grid',gridTemplateColumns:'1fr auto 1fr',alignItems:'center',gap:8,padding:'12px 0 4px'}}>
+          <span style={{fontWeight:700,textAlign:'right',fontSize:'1rem'}}>{match.t1.name}</span>
+          <span style={{fontSize:'2rem',fontWeight:900,padding:'0 12px'}}>{r.g1}–{r.g2}</span>
+          <span style={{fontWeight:700,fontSize:'1rem'}}>{match.t2.name}</span>
+        </div>
+        <div style={{textAlign:'center',fontSize:'.78rem',color:'#888',marginBottom:12}}>
+          {match.t1.coach?.formation||'4-4-2'} vs {match.t2.coach?.formation||'4-4-2'}
+        </div>
+        <div style={{borderTop:'1px solid #eee',paddingTop:8}}>
+          <div style={{fontSize:'.78rem',fontWeight:700,textTransform:'uppercase',letterSpacing:'.06em',color:'#557',marginBottom:6}}>Cronaca</div>
+          {events.length===0&&<p style={{color:'#aaa',fontSize:'.83rem'}}>Nessun evento registrato.</p>}
+          {events.map((e,i)=>(
+            <div key={i} style={{fontSize:'.85rem',padding:'4px 10px',borderBottom:'1px solid #f5f5f5'}}>
+              <span style={{display:'inline-block',width:32,color:'#888',fontSize:'.78rem'}}>{e.minute}'</span>
+              ⚽ <strong>{e.scorer.lastName}</strong> <em style={{color:'#999',marginLeft:6,fontSize:'.75rem'}}>{e.team}</em>
+            </div>
+          ))}
+        </div>
+        <div style={{display:'flex',justifyContent:'flex-end',marginTop:16}}>
+          <button className="btn-confirm" onClick={onClose}>Chiudi</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Player Card Modal
+function PlayerCardModal({player, teamName, onClose}) {
+  if(!player) return null;
+  const {firstName,lastName,age,role,strength,contract,personality,career=[]} = player;
+  const roleColor = {ATT:'#e84040',CEN:'#1a6fc4',DIF:'#27ae60',POR:'#888'};
+  return (
+    <div className="overlay" onClick={e=>{if(e.target===e.currentTarget)onClose();}}>
+      <div className="modal" style={{maxWidth:520}}>
+        <button className="modal-close" onClick={onClose}>×</button>
+        <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:8}}>
+          <span style={{fontSize:'1.25rem',fontWeight:700}}>{firstName} {lastName}</span>
+          <span style={{background:'#e8eef8',color:roleColor[role]||'#1a6fc4',padding:'2px 8px',borderRadius:4,fontSize:'.82rem',fontWeight:600}}>{role}</span>
+        </div>
+        <div style={{display:'flex',gap:18,marginBottom:14,fontSize:'.9rem',color:'#444'}}>
+          <span>{age} anni</span><span>⚡ {strength}</span><span>🏟️ {teamName}</span>
+          {player.seasonGoals>0&&<span>⚽ {player.seasonGoals} gol</span>}
+        </div>
+        <div style={{display:'flex',gap:14,marginBottom:14}}>
+          <div style={{flex:1}}>
+            <div style={{fontSize:'.75rem',fontWeight:700,textTransform:'uppercase',letterSpacing:'.06em',color:'#557',marginBottom:5}}>Contratto</div>
+            <div style={{background:'#f7f9fc',borderRadius:6,padding:'8px 10px',fontSize:'.82rem'}}>
+              {[['Durata',`${contract?.duration||1} anni`],['Stipendio',`${contract?.salary||'-'}k€/mese`]].map(([k,v])=>(
+                <div key={k} style={{display:'flex',justifyContent:'space-between',padding:'3px 0',borderBottom:'1px solid #eef0f5'}}>
+                  <span style={{color:'#666'}}>{k}</span><strong>{v}</strong>
+                </div>
+              ))}
+            </div>
+          </div>
+          {personality&&<div style={{flex:1}}>
+            <div style={{fontSize:'.75rem',fontWeight:700,textTransform:'uppercase',letterSpacing:'.06em',color:'#557',marginBottom:5}}>Personalità</div>
+            <div style={{background:'#f7f9fc',borderRadius:6,padding:'8px 10px'}}>
+              {[['Ambiz.',personality.ambition],['Fedeltà',personality.loyalty],['Avidità',personality.greed]].map(([k,v])=>(
+                <div key={k} style={{display:'flex',alignItems:'center',gap:8,padding:'4px 0',fontSize:'.82rem'}}>
+                  <span style={{width:60,color:'#666',flexShrink:0}}>{k}</span>
+                  <div className="pc-bar"><span className="pc-fill" style={{width:`${v}%`}}></span></div>
+                </div>
+              ))}
+            </div>
+          </div>}
+        </div>
+        {career.length>0&&<div>
+          <div style={{fontSize:'.75rem',fontWeight:700,textTransform:'uppercase',letterSpacing:'.06em',color:'#557',marginBottom:5}}>Carriera</div>
+          <table style={{fontSize:'.82rem'}}>
+            <thead><tr><th style={{textAlign:'left'}}>Squadra</th><th>Da</th><th>A</th></tr></thead>
+            <tbody>{career.map((c,i)=><tr key={i}><td style={{textAlign:'left'}}>{c.team}</td><td>{c.joined}</td><td>{c.left??'—'}</td></tr>)}</tbody>
+          </table>
+        </div>}
+        <div style={{display:'flex',justifyContent:'flex-end',marginTop:14}}>
+          <button className="btn-confirm" onClick={onClose}>Chiudi</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Transfer Market Modal
+function TransferMarketModal({myTeam, onClose, onConfirm}) {
+  const [tab, setTab] = useState('rinnovi');
+  const [renewDecisions, setRenewDecisions] = useState({});
+  const expiring = (myTeam?.roster||[]).filter(p=>p.contract?.duration<=1);
+  const offers = (myTeam?.roster||[])
+    .filter(p=>p.role!=='POR'&&p.strength>50&&Math.random()<.3)
+    .slice(0,3)
+    .map(p=>({player:p, buyerName:['Juventus','Inter','Milan'][rand(0,2)], price:(p.strength*p.strength/250*1.5).toFixed(1)}));
+  const tabs = [
+    {id:'rinnovi',label:`Rinnovi${expiring.length>0?` (${expiring.length})`:''}` },
+    {id:'offerte',label:'Offerte'},
+    {id:'rosa',label:'Rosa'},
+  ];
+  return (
+    <div className="overlay" onClick={e=>{if(e.target===e.currentTarget)onClose();}}>
+      <div className="mm-box">
+        <div className="mm-header">
+          <span className="mm-title">🏟️ Sessione di Mercato — {myTeam?.name}</span>
+          <span className="mm-budget">Budget: {myTeam?.budget?.toFixed(1)||'—'}M€</span>
+        </div>
+        <div className="mm-tabs">
+          {tabs.map(t=><button key={t.id} className={`mm-tab${tab===t.id?' active':''}`} onClick={()=>setTab(t.id)}>{t.label}</button>)}
+        </div>
+        <div className="mm-content">
+          {tab==='rinnovi'&&(expiring.length===0
+            ?<p className="mm-empty">Nessun contratto in scadenza.</p>
+            :expiring.map(p=>{
+              const d=renewDecisions[p.id];
+              const sal=Math.round(p.strength*p.strength/100);
+              if(d==='renewed') return <div key={p.id} className="mm-row done">✅ <strong>{p.firstName} {p.lastName}</strong> rinnovato — {sal}k€/mese</div>;
+              if(d==='released') return <div key={p.id} className="mm-row done">🔚 <strong>{p.firstName} {p.lastName}</strong> svincolato</div>;
+              return <div key={p.id} className="mm-row">
+                <div className="mm-pinfo"><span className="mm-name">{p.firstName} {p.lastName}</span><span className="mm-badge">{p.role}</span><span className="mm-meta">{p.age}a ⚡{p.strength}</span><span className="mm-meta">{p.contract?.salary}k€ → <strong>{sal}k€</strong>/mese</span></div>
+                <div className="mm-acts">
+                  <button className="btn-green" onClick={()=>setRenewDecisions(d=>({...d,[p.id]:'renewed'}))}>Rinnova</button>
+                  <button className="btn-red" onClick={()=>setRenewDecisions(d=>({...d,[p.id]:'released'}))}>Svincola</button>
+                </div>
+              </div>;
+            })
+          )}
+          {tab==='offerte'&&(offers.length===0
+            ?<p className="mm-empty">Nessuna offerta ricevuta.</p>
+            :offers.map((o,i)=>(
+              <div key={i} className="mm-row">
+                <div className="mm-pinfo"><span className="mm-name">{o.player.firstName} {o.player.lastName}</span><span className="mm-badge">{o.player.role}</span><span className="mm-meta">{o.player.age}a ⚡{o.player.strength}</span><span className="mm-meta">🏟️ {o.buyerName}</span></div>
+                <div className="mm-acts"><span className="mm-price">{o.price}M€</span><button className="btn-green">Accetta</button><button className="btn-red">Rifiuta</button></div>
+              </div>
+            ))
+          )}
+          {tab==='rosa'&&(
+            <table style={{fontSize:'.85rem'}}>
+              <thead><tr><th style={{textAlign:'left'}}>Nome</th><th>Ruolo</th><th>Età</th><th>Forza</th><th>Contratto</th></tr></thead>
+              <tbody>
+                {[...((myTeam?.roster)||[])].sort((a,b)=>(['POR','DIF','CEN','ATT'].indexOf(a.role)-['POR','DIF','CEN','ATT'].indexOf(b.role))||b.strength-a.strength).map(p=>(
+                  <tr key={p.id}><td style={{textAlign:'left'}}>{p.firstName} {p.lastName}</td><td>{p.role}</td><td>{p.age}</td><td><strong>{p.strength}</strong></td><td style={{fontSize:'.78rem',color:'#666'}}>{p.contract?.duration}a · {p.contract?.salary}k€/m</td></tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+        <div className="mm-footer">
+          <span style={{fontSize:'.85rem',color:'#666'}}>Le decisioni avranno effetto da inizio prossima stagione</span>
+          <button className="btn-confirm" onClick={onConfirm}>Conferma ✓</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Database Modal
+function DatabaseModal({allTeams, onClose}) {
+  const [tab, setTab] = useState('giocatori');
+  const [filterRole, setFilterRole] = useState('');
+  const [filterName, setFilterName] = useState('');
+  const [selectedPlayer, setSelectedPlayer] = useState(null);
+
+  const allPlayers = allTeams.flatMap(t=>(t.roster||[]).map(p=>({...p,teamName:t.name})));
+  const filtered = allPlayers.filter(p=>
+    (!filterRole||p.role===filterRole)&&
+    (!filterName||(p.firstName+' '+p.lastName).toLowerCase().includes(filterName.toLowerCase()))
+  ).sort((a,b)=>b.strength-a.strength).slice(0,50);
+
+  const coaches = allTeams.map(t=>({...t.coach,teamName:t.name})).filter(Boolean).sort((a,b)=>b.strength-a.strength);
+
+  return (
+    <div className="overlay" onClick={e=>{if(e.target===e.currentTarget)onClose();}}>
+      {selectedPlayer&&<PlayerCardModal player={selectedPlayer} teamName={selectedPlayer.teamName} onClose={()=>setSelectedPlayer(null)}/>}
+      <div className="modal" style={{maxWidth:'92vw',width:'92vw'}}>
+        <button className="modal-close" onClick={onClose}>×</button>
+        <h3 style={{marginBottom:12}}>📋 Database</h3>
+        <div style={{display:'flex',gap:8,marginBottom:12}}>
+          {['giocatori','allenatori'].map(t=><button key={t} className={`db-tab-btn${tab===t?' active':''}`} onClick={()=>setTab(t)}>{t.charAt(0).toUpperCase()+t.slice(1)}</button>)}
+        </div>
+        {tab==='giocatori'&&<>
+          <div className="db-filters">
+            <select value={filterRole} onChange={e=>setFilterRole(e.target.value)}>
+              <option value=''>Tutti i ruoli</option>
+              {['POR','DIF','CEN','ATT'].map(r=><option key={r} value={r}>{r}</option>)}
+            </select>
+            <input placeholder="Cerca giocatore..." value={filterName} onChange={e=>setFilterName(e.target.value)} style={{flex:1,minWidth:150}} />
+          </div>
+          <div style={{fontSize:'.82rem',color:'#888',marginBottom:6}}>{filtered.length} giocatori</div>
+          <div style={{overflowX:'auto'}}>
+            <table style={{fontSize:'.83rem'}}>
+              <thead><tr><th style={{textAlign:'left'}}>Nome</th><th>Ruolo</th><th>Età</th><th>Forza</th><th style={{textAlign:'left'}}>Squadra</th><th>Contratto</th></tr></thead>
+              <tbody>
+                {filtered.map((p,i)=>(
+                  <tr key={i} className="db-row" onClick={()=>setSelectedPlayer(p)} style={{cursor:'pointer'}}>
+                    <td style={{textAlign:'left'}}><span className="clickable">{p.firstName} {p.lastName}</span></td>
+                    <td><span style={{background:'#e8eef8',color:'#1a6fc4',padding:'1px 5px',borderRadius:3,fontSize:'.76rem',fontWeight:600}}>{p.role}</span></td>
+                    <td>{p.age}</td><td><strong>{p.strength}</strong></td>
+                    <td style={{textAlign:'left',fontSize:'.78rem',color:'#666'}}>{p.teamName}</td>
+                    <td style={{fontSize:'.78rem',color:'#555'}}>{p.contract?.duration}a · {p.contract?.salary}k€/m</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>}
+        {tab==='allenatori'&&<>
+          <table style={{fontSize:'.83rem'}}>
+            <thead><tr><th style={{textAlign:'left'}}>Nome</th><th>Forza</th><th>Modulo</th><th style={{textAlign:'left'}}>Squadra</th></tr></thead>
+            <tbody>
+              {coaches.map((c,i)=>(
+                <tr key={i}>
+                  <td style={{textAlign:'left'}}>{c.firstName} {c.lastName}</td>
+                  <td><strong>{c.strength}</strong></td>
+                  <td style={{fontSize:'.78rem'}}>{c.formation}</td>
+                  <td style={{textAlign:'left',fontSize:'.78rem',color:'#666'}}>{c.teamName}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>}
+        <div style={{display:'flex',justifyContent:'flex-end',marginTop:14}}>
+          <button className="btn-confirm" onClick={onClose}>Chiudi</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── MAIN APP ──────────────────────────────────────────────────────────────────
+function App() {
+  const savedPhase = localStorage.getItem('sci-phase');
+  const savedTeam = localStorage.getItem('sci-team');
+  const savedSeason = localStorage.getItem('sci-season');
+
+  const [phase, setPhase] = useState(savedPhase||'select');
+  const [myTeamName, setMyTeamName] = useState(savedTeam||null);
+  const [seasonNum, setSeasonNum] = useState(savedSeason?parseInt(savedSeason):0);
+  const [leagueA, setLeagueA] = useState(()=>buildLeague(TEAMS_A,70,90,80,150,'A'));
+  const [leagueB, setLeagueB] = useState(()=>buildLeague(TEAMS_B,45,65,20,60,'B'));
+  const [leagueC, setLeagueC] = useState(()=>buildLeague(TEAMS_C,20,45,5,15,'C'));
+  const [roundsA, setRoundsA] = useState([]);
+  const [roundsB, setRoundsB] = useState([]);
+  const [roundsC, setRoundsC] = useState([]);
+  const [currentRound, setCurrentRound] = useState(0);
+  const [lastRoundA, setLastRoundA] = useState(null);
+  const [lastRoundB, setLastRoundB] = useState(null);
+  const [lastRoundC, setLastRoundC] = useState(null);
+  const [matchModal, setMatchModal] = useState(null);
+  const [playerModal, setPlayerModal] = useState(null);
+  const [transferModal, setTransferModal] = useState(false);
+  const [dbModal, setDbModal] = useState(false);
+  const [history, setHistory] = useState([]);
+  const [simDone, setSimDone] = useState(false);
+
+  useEffect(()=>{ localStorage.setItem('sci-phase', phase); }, [phase]);
+  useEffect(()=>{ if(myTeamName) localStorage.setItem('sci-team', myTeamName); }, [myTeamName]);
+  useEffect(()=>{ localStorage.setItem('sci-season', seasonNum); }, [seasonNum]);
+
+  const allTeams = [...leagueA, ...leagueB, ...leagueC];
+  const myTeam = allTeams.find(t=>t.name===myTeamName)||null;
+
+  function startSeason() {
+    const newA = leagueA.map(t=>({...t,standing:{pts:0,w:0,d:0,l:0,gf:0,ga:0}}));
+    const newB = leagueB.map(t=>({...t,standing:{pts:0,w:0,d:0,l:0,gf:0,ga:0}}));
+    const newC = leagueC.map(t=>({...t,standing:{pts:0,w:0,d:0,l:0,gf:0,ga:0}}));
+    const rA = makeSchedule(newA);
+    const rB = makeSchedule(newB);
+    const rC = makeSchedule(newC);
+    setLeagueA(newA); setLeagueB(newB); setLeagueC(newC);
+    setRoundsA(rA); setRoundsB(rB); setRoundsC(rC);
+    setCurrentRound(0); setSimDone(false);
+    setLastRoundA(null); setLastRoundB(null); setLastRoundC(null);
+    setPhase('playing');
+    setSeasonNum(s=>s+1);
+  }
+
+  function simOneRound() {
+    if(simDone) return;
+    const idx = currentRound;
+    if(idx>=roundsA.length) { setSimDone(true); return; }
+    [
+      [roundsA[idx], leagueA],
+      [roundsB[idx], leagueB],
+      [roundsC[idx], leagueC],
+    ].forEach(([round, league]) => {
+      round.forEach(m=>{
+        if(m.t1.name==='Day off'||m.t2.name==='Day off') return;
+        const t1=league.find(t=>t.name===m.t1.name)||m.t1;
+        const t2=league.find(t=>t.name===m.t2.name)||m.t2;
+        const result = simMatch(t1,t2);
+        m.result = result;
+        updateStanding(t1, result.g1, result.g2);
+        updateStanding(t2, result.g2, result.g1);
+      });
+    });
+    setLastRoundA({...roundsA[idx]});
+    setLastRoundB({...roundsB[idx]});
+    setLastRoundC({...roundsC[idx]});
+    setLeagueA([...leagueA]);
+    setLeagueB([...leagueB]);
+    setLeagueC([...leagueC]);
+    const next = idx+1;
+    setCurrentRound(next);
+    if(next>=roundsA.length) setSimDone(true);
+  }
+
+  function simAll() {
+    const totalRounds = roundsA.length;
+    for(let i=currentRound; i<totalRounds; i++) {
+      [
+        [roundsA[i], leagueA],
+        [roundsB[i], leagueB],
+        [roundsC[i], leagueC],
+      ].forEach(([round, league]) => {
+        round.forEach(m=>{
+          if(m.t1.name==='Day off'||m.t2.name==='Day off'||m.result) return;
+          const t1=league.find(t=>t.name===m.t1.name)||m.t1;
+          const t2=league.find(t=>t.name===m.t2.name)||m.t2;
+          const result = simMatch(t1,t2);
+          m.result = result;
+          updateStanding(t1, result.g1, result.g2);
+          updateStanding(t2, result.g2, result.g1);
+        });
+      });
+    }
+    setLeagueA([...leagueA]); setLeagueB([...leagueB]); setLeagueC([...leagueC]);
+    const last = totalRounds-1;
+    setLastRoundA(roundsA[last]?{...roundsA[last]}:null);
+    setLastRoundB(roundsB[last]?{...roundsB[last]}:null);
+    setLastRoundC(roundsC[last]?{...roundsC[last]}:null);
+    setCurrentRound(totalRounds);
+    setSimDone(true);
+  }
+
+  function endSeason() {
+    const champA = [...leagueA].sort((a,b)=>b.standing.pts-a.standing.pts)[0];
+    setHistory(h=>[...h,{season:seasonNum, champA:champA?.name}]);
+    if(myTeam) setTransferModal(true);
+    else startSeason();
+  }
+
+  if(phase==='select') {
+    return <TeamSelection onSelect={(t,level)=>{
+      if(t) setMyTeamName(t.name); else setMyTeamName(null);
+      setPhase('main');
+    }}/>;
+  }
+
+  const champA = simDone&&leagueA.length>0 ? [...leagueA].sort((a,b)=>b.standing.pts-a.standing.pts)[0] : null;
+
+  return (
+    <div style={{padding:'20px',paddingTop:64,maxWidth:1200,margin:'0 auto'}}>
+      {/* Sticky header */}
+      <div style={{position:'fixed',top:0,left:0,right:0,zIndex:1000,display:'flex',alignItems:'center',justifyContent:'center',gap:12,background:'rgba(255,255,255,.95)',backdropFilter:'blur(4px)',borderBottom:'1px solid #e0e0e0',padding:'8px 16px',boxShadow:'0 2px 8px rgba(0,0,0,.08)'}}>
+        {phase==='main'&&<button onClick={startSeason} style={{padding:'8px 20px',fontSize:'1.1rem',background:'#007bff',color:'#fff',border:'none',borderRadius:5,cursor:'pointer',boxShadow:'0 4px 6px rgba(0,0,0,.1)',fontWeight:700}}>
+          {seasonNum===0?'Inizia Stagione':`Stagione ${seasonNum+1}`}
+        </button>}
+        {phase==='playing'&&!simDone&&<>
+          <button onClick={simOneRound} style={{padding:'8px 20px',fontSize:'1rem',background:'#007bff',color:'#fff',border:'none',borderRadius:5,cursor:'pointer',fontWeight:700}}>
+            ▶ Giornata {currentRound+1}
+          </button>
+          <button onClick={simAll} style={{padding:'7px 14px',fontSize:'.88rem',background:'#6c757d',color:'#fff',border:'none',borderRadius:5,cursor:'pointer'}}>
+            Simula Tutto ▶▶
+          </button>
+        </>}
+        {phase==='playing'&&simDone&&<>
+          {champA&&<span style={{background:'gold',padding:'4px 12px',borderRadius:4,fontWeight:700,fontSize:'.9rem'}}>🏆 {champA.name}</span>}
+          <button onClick={endSeason} style={{padding:'8px 20px',background:'#1a4a8a',color:'#fff',border:'none',borderRadius:5,cursor:'pointer',fontWeight:700,fontSize:'.95rem'}}>
+            Fine Stagione →
+          </button>
+        </>}
+        <button onClick={()=>setDbModal(true)} style={{padding:'6px 14px',fontSize:'.85rem',background:'#f5f5f5',border:'1px solid #ddd',borderRadius:5,cursor:'pointer',marginLeft:8}}>Database</button>
+        {myTeamName&&<span style={{background:'#1a4a8a',color:'#fff',padding:'5px 14px',borderRadius:20,fontSize:'.82rem',fontWeight:600}}>⚽ {myTeamName}</span>}
+        <button onClick={()=>setPhase('select')} style={{padding:'5px 12px',fontSize:'.8rem',background:'none',border:'1px solid #ddd',borderRadius:5,cursor:'pointer',color:'#666',marginLeft:'auto'}}>← Squadra</button>
+      </div>
+
+      {/* Modals */}
+      {matchModal&&<MatchDetailModal match={matchModal} onClose={()=>setMatchModal(null)}/>}
+      {playerModal&&<PlayerCardModal player={playerModal.player} teamName={playerModal.teamName} onClose={()=>setPlayerModal(null)}/>}
+      {transferModal&&myTeam&&<TransferMarketModal myTeam={myTeam} onClose={()=>{setTransferModal(false);startSeason();}} onConfirm={()=>{setTransferModal(false);startSeason();}}/>}
+      {dbModal&&<DatabaseModal allTeams={allTeams} onClose={()=>setDbModal(false)}/>}
+
+      {phase==='main'&&seasonNum===0&&(
+        <div style={{textAlign:'center',padding:'60px 20px',color:'#888'}}>
+          <div style={{fontSize:'2rem',marginBottom:12}}>⚽</div>
+          <div style={{fontSize:'1.2rem',fontWeight:700,color:'#333',marginBottom:8}}>Benvenuto nel Simulatore</div>
+          <p style={{maxWidth:400,margin:'0 auto',lineHeight:1.6}}>Premi <strong>Inizia Stagione</strong> per simulare Serie A, B e C con 60 squadre italiane.</p>
+        </div>
+      )}
+
+      {/* History */}
+      {history.length>0&&<div style={{marginBottom:20,padding:'10px 16px',background:'#f7f9fc',borderRadius:8,fontSize:'.85rem'}}>
+        <strong>Albo d'Oro — </strong>
+        {history.map((h,i)=><span key={i} style={{marginRight:12}}>Stagione {h.season}: <strong>{h.champA}</strong></span>)}
+      </div>}
+
+      {/* Last matchday highlights */}
+      {(lastRoundA||lastRoundB||lastRoundC)&&(
+        <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:16,marginBottom:24}}>
+          {lastRoundA&&<MatchdayHighlight round={Object.values(lastRoundA)} matchday={currentRound} myTeamName={myTeamName} onClickMatch={setMatchModal}/>}
+          {lastRoundB&&<MatchdayHighlight round={Object.values(lastRoundB)} matchday={currentRound} myTeamName={myTeamName} onClickMatch={setMatchModal}/>}
+          {lastRoundC&&<MatchdayHighlight round={Object.values(lastRoundC)} matchday={currentRound} myTeamName={myTeamName} onClickMatch={setMatchModal}/>}
+        </div>
+      )}
+
+      {/* Standings */}
+      {leagueA.some(t=>t.standing.w+t.standing.d+t.standing.l>0)&&<>
+        <div id="classifica-serieA">
+          <h2 id="classifica-serieA-title" style={{marginBottom:10,display:'flex',alignItems:'center',gap:8}}>
+            Serie A
+            {champA&&simDone&&<span className="coppa-badge">🏆 {champA.name}</span>}
+          </h2>
+          <StandingsTable teams={leagueA} leagueLabel="A" myTeamName={myTeamName} onClickTeam={t=>{const p=t.roster?.[0]; if(p)setPlayerModal({player:p,teamName:t.name});}} />
+        </div>
+        <div id="classifica-serieB" className="section-sep">
+          <h2 style={{marginBottom:10}}>Serie B</h2>
+          <StandingsTable teams={leagueB} leagueLabel="B" myTeamName={myTeamName} onClickTeam={t=>{const p=t.roster?.[0]; if(p)setPlayerModal({player:p,teamName:t.name});}} />
+        </div>
+        <div id="classifica-serieC" className="section-sep">
+          <h2 style={{marginBottom:10}}>Serie C</h2>
+          <StandingsTable teams={leagueC} leagueLabel="C" myTeamName={myTeamName} onClickTeam={t=>{const p=t.roster?.[0]; if(p)setPlayerModal({player:p,teamName:t.name});}} />
+        </div>
+
+        {/* Rounds grid */}
+        {roundsA.length>0&&<div className="section-sep">
+          <h2 style={{marginBottom:8}}>Calendario Serie A</h2>
+          <RoundsGrid rounds={roundsA}/>
+        </div>}
+      </>}
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App/>);
+</script>
+</body>
+</html>

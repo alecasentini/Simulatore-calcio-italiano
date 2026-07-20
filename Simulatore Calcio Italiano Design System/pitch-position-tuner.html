@@ -1,0 +1,512 @@
+<meta charset="UTF-8">
+<title>Tuner posizione pallini — Campo tattico</title>
+<style>
+  :root {
+    --bg: #12161f;
+    --panel: #1b2130;
+    --panel-border: #333c52;
+    --text: #e8ecf5;
+    --text-dim: #8b93a8;
+    --accent: #f0a013;
+    --role-por-bg: #f0a013;
+    --role-dif-bg: #1f6bff;
+    --role-cen-bg: #14b24a;
+    --role-att-bg: #ec1f3a;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    display: flex;
+    min-height: 100vh;
+  }
+
+  #pitch-col {
+    flex: 0 0 420px;
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    align-items: center;
+  }
+
+  #controls-col {
+    flex: 1;
+    padding: 24px 24px 60px;
+    overflow-y: auto;
+    max-height: 100vh;
+  }
+
+  h1 {
+    font-size: 1.05rem;
+    margin: 0 0 4px;
+  }
+
+  p.hint {
+    color: var(--text-dim);
+    font-size: .82rem;
+    margin: 0 0 16px;
+    max-width: 640px;
+    line-height: 1.5;
+  }
+
+  select {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    padding: 8px 10px;
+    font-size: .9rem;
+    width: 100%;
+  }
+
+  .pitch-container {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 672 / 880;
+    overflow: hidden;
+    border: 2px solid var(--panel-border);
+    border-radius: 6px;
+  }
+
+  .pitch-bg-svg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  .pitch-dot-wrap {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1px;
+    pointer-events: none;
+    transition: left .08s linear, top .08s linear;
+  }
+
+  .pitch-dot {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    filter: drop-shadow(0 0 1px rgba(0, 0, 0, .8));
+  }
+
+  .pitch-dot-value-text {
+    color: #fff;
+    font-weight: 800;
+    font-size: .72rem;
+    text-shadow: 0 0 2px rgba(0, 0, 0, .6);
+  }
+
+  .zone-POR .pitch-dot { background: var(--role-por-bg); }
+  .zone-DIF .pitch-dot { background: var(--role-dif-bg); }
+  .zone-CEN .pitch-dot { background: var(--role-cen-bg); }
+  .zone-ATT .pitch-dot { background: var(--role-att-bg); }
+
+  .pitch-dot-role {
+    font-size: .72rem;
+    font-weight: 800;
+    color: #fff;
+    text-shadow: 0 0 2px #000, 0 0 2px #000, 1px 1px 0 #000;
+    line-height: 1;
+  }
+
+  .pitch-dot-pos {
+    font-size: .64rem;
+    color: #fff;
+    text-shadow: 0 0 2px #000, 0 0 2px #000, 1px 1px 0 #000;
+    white-space: nowrap;
+    line-height: 1;
+  }
+
+  fieldset {
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    margin: 0 0 16px;
+    padding: 12px 14px 16px;
+  }
+
+  legend {
+    font-size: .72rem;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--accent);
+    padding: 0 6px;
+  }
+
+  .slider-row {
+    display: grid;
+    grid-template-columns: 90px 1fr 46px;
+    align-items: center;
+    gap: 10px;
+    margin: 8px 0;
+  }
+
+  .slider-row label {
+    font-size: .82rem;
+    color: var(--text-dim);
+  }
+
+  .slider-row output {
+    font-variant-numeric: tabular-nums;
+    font-size: .85rem;
+    text-align: right;
+  }
+
+  input[type="range"] {
+    width: 100%;
+    accent-color: var(--accent);
+  }
+
+  #export-box {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    padding: 12px 14px;
+    font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+    font-size: .78rem;
+    white-space: pre;
+    overflow-x: auto;
+    color: #c9d4ea;
+    margin-top: 8px;
+  }
+
+  #reset-btn {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    padding: 8px 14px;
+    font-size: .82rem;
+    cursor: pointer;
+    margin-top: 8px;
+  }
+
+  #reset-btn:hover { border-color: var(--accent); }
+</style>
+
+<div id="pitch-col">
+  <h1>Anteprima campo</h1>
+  <label style="width:100%">
+    <span style="font-size:.8rem;color:var(--text-dim)">Modulo di prova</span>
+    <select id="formation-select"></select>
+  </label>
+  <div class="pitch-container">
+    <div id="pitch-bg-slot"></div>
+    <div id="dots-slot"></div>
+  </div>
+  <button id="reset-btn" type="button">Ripristina valori originali</button>
+</div>
+
+<div id="controls-col">
+  <p class="hint">
+    Muovi gli slider: i pallini si spostano subito sul campo a sinistra. Sono
+    gli stessi identici valori usati dal gioco in <code>assets/js/main.js</code>
+    (costanti <code>ROLE_PITCH_Y</code>, <code>CENTRAL_X</code>, <code>WIDE_X</code>).
+    Quando sei soddisfatto, copiami i valori dal riquadro in fondo e li applico
+    al gioco vero.
+  </p>
+
+  <fieldset>
+    <legend>Altezza sul campo per ruolo (ROLE_PITCH_Y)</legend>
+    <div id="y-sliders"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Colonna slot centrali stessa riga (CENTRAL_X)</legend>
+    <div class="slider-row">
+      <label>1 giocatore</label>
+      <input type="range" id="cx1-0" min="10" max="90" value="50">
+      <output id="cx1-0-out">50</output>
+    </div>
+    <div class="slider-row">
+      <label>2 giocatori</label>
+      <input type="range" id="cx2-0" min="10" max="50" value="40">
+      <output id="cx2-0-out">40</output>
+    </div>
+    <div class="slider-row">
+      <label>&nbsp;</label>
+      <input type="range" id="cx2-1" min="50" max="90" value="60">
+      <output id="cx2-1-out">60</output>
+    </div>
+    <div class="slider-row">
+      <label>3 giocatori</label>
+      <input type="range" id="cx3-0" min="5" max="50" value="35">
+      <output id="cx3-0-out">35</output>
+    </div>
+    <div class="slider-row">
+      <label>&nbsp;</label>
+      <input type="range" id="cx3-1" min="10" max="90" value="50">
+      <output id="cx3-1-out">50</output>
+    </div>
+    <div class="slider-row">
+      <label>&nbsp;</label>
+      <input type="range" id="cx3-2" min="50" max="95" value="65">
+      <output id="cx3-2-out">65</output>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Colonna ruoli larghi (WIDE_X — TER / EST / ALA)</legend>
+    <div class="slider-row">
+      <label>Sinistra</label>
+      <input type="range" id="wx-0" min="2" max="45" value="20">
+      <output id="wx-0-out">20</output>
+    </div>
+    <div class="slider-row">
+      <label>Destra</label>
+      <input type="range" id="wx-1" min="55" max="98" value="80">
+      <output id="wx-1-out">80</output>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Valori attuali (da incollare in chat)</legend>
+    <div id="export-box"></div>
+  </fieldset>
+</div>
+
+<script>
+// ── Stessa logica di main.js (PITCH_BG_SVG, computePitchPositions) ──
+const PITCH_BG_SVG = (() => {
+  const W = 672, H = 880, M = 24;
+  const boxW = 374, boxD = 137, gaW = 187, gaD = 54, penDist = 110, R = 70;
+  const boxX = (W - boxW) / 2, gaX = (W - gaW) / 2;
+  const end = (goalY, dir) => {
+    const boxY = dir === 1 ? goalY : goalY - boxD;
+    const gaY = dir === 1 ? goalY : goalY - gaD;
+    const spotY = goalY + dir * penDist;
+    return `
+      <rect x="${boxX}" y="${boxY}" width="${boxW}" height="${boxD}" fill="none" stroke="#fff" stroke-width="4" shape-rendering="crispEdges"/>
+      <circle cx="${W / 2}" cy="${spotY}" r="${R}" fill="none" stroke="#fff" stroke-width="4"/>
+      <rect x="${boxX}" y="${boxY}" width="${boxW}" height="${boxD}" fill="url(#pitchGrass)"/>
+      <rect x="${boxX}" y="${boxY}" width="${boxW}" height="${boxD}" fill="none" stroke="#fff" stroke-width="4" shape-rendering="crispEdges"/>
+      <rect x="${gaX}" y="${gaY}" width="${gaW}" height="${gaD}" fill="none" stroke="#fff" stroke-width="4" shape-rendering="crispEdges"/>
+      <circle cx="${W / 2}" cy="${spotY}" r="4" fill="#fff"/>`;
+  };
+  return `<svg class="pitch-bg-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <pattern id="pitchGrass" patternUnits="userSpaceOnUse" x="0" y="0" width="${W}" height="68">
+        <rect x="0" y="0" width="${W}" height="34" fill="#2f9a4d"/>
+        <rect x="0" y="34" width="${W}" height="34" fill="#268039"/>
+      </pattern>
+    </defs>
+    <rect x="0" y="0" width="${W}" height="${H}" fill="url(#pitchGrass)"/>
+    <rect x="${M}" y="${M}" width="${W - 2 * M}" height="${H - 2 * M}" fill="none" stroke="#fff" stroke-width="4" shape-rendering="crispEdges"/>
+    <line x1="${M}" y1="${H / 2}" x2="${W - M}" y2="${H / 2}" stroke="#fff" stroke-width="4" shape-rendering="crispEdges"/>
+    <circle cx="${W / 2}" cy="${H / 2}" r="${R}" fill="none" stroke="#fff" stroke-width="4"/>
+    <circle cx="${W / 2}" cy="${H / 2}" r="4" fill="#fff"/>
+    ${end(M, 1)}
+    ${end(H - M, -1)}
+  </svg>`;
+})();
+document.getElementById('pitch-bg-slot').outerHTML = PITCH_BG_SVG.replace('<svg', '<svg id="pitch-bg-slot"').replace('class="pitch-bg-svg"', 'class="pitch-bg-svg" style="position:absolute"');
+
+const FORMATIONS = {
+  '4-4-2': { POR: 1, DIF: 2, TER: 2, CEN: 2, EST: 2, ATT: 2 },
+  '4-3-3': { POR: 1, DIF: 2, TER: 2, CEN: 3, ALA: 2, ATT: 1 },
+  '3-5-2': { POR: 1, DIF: 3, MED: 1, EST: 2, CEN: 2, ATT: 2 },
+  '4-2-4': { POR: 1, DIF: 2, TER: 2, MED: 2, ALA: 2, ATT: 2 },
+  '5-3-2': { POR: 1, DIF: 3, TER: 2, MED: 1, CEN: 2, ATT: 2 },
+  '4-5-1': { POR: 1, DIF: 2, TER: 2, MED: 1, CEN: 2, EST: 2, ATT: 1 },
+  '3-4-3': { POR: 1, DIF: 3, EST: 2, CEN: 2, ALA: 2, ATT: 1 },
+  '3-1-4-2': { POR: 1, DIF: 3, MED: 1, CEN: 2, EST: 2, ATT: 2 },
+  '3-4-1-2': { POR: 1, DIF: 3, EST: 2, CEN: 2, TRQ: 1, ATT: 2 },
+  '3-4-2-1': { POR: 1, DIF: 3, EST: 2, CEN: 2, TRQ: 2, ATT: 1 },
+  '4-1-2-1-2': { POR: 1, DIF: 2, TER: 2, MED: 1, CEN: 2, TRQ: 1, ATT: 2 },
+  '4-2-2-2': { POR: 1, DIF: 2, TER: 2, MED: 2, TRQ: 2, ATT: 2 },
+  '4-2-1-3': { POR: 1, DIF: 2, TER: 2, MED: 2, TRQ: 1, ALA: 2, ATT: 1 },
+  '4-1-2-3': { POR: 1, DIF: 2, TER: 2, MED: 1, CEN: 2, ALA: 2, ATT: 1 },
+  '4-3-2-1': { POR: 1, DIF: 2, TER: 2, CEN: 3, TRQ: 2, ATT: 1 },
+  '5-1-2-2': { POR: 1, DIF: 3, TER: 2, MED: 1, CEN: 2, ATT: 2 },
+  '5-2-2-1': { POR: 1, DIF: 3, TER: 2, MED: 2, TRQ: 2, ATT: 1 },
+  '5-4-1': { POR: 1, DIF: 3, TER: 2, CEN: 2, EST: 2, ATT: 1 },
+  '5-1-3-1': { POR: 1, DIF: 3, TER: 2, MED: 1, CEN: 3, ATT: 1 },
+};
+const ROLE_ZONE = {
+  POR: 'POR',
+  DIF: 'DIF', TER: 'DIF',
+  MED: 'CEN', CEN: 'CEN', EST: 'CEN', TRQ: 'CEN',
+  ALA: 'ATT', ATT: 'ATT',
+};
+const WIDE_ROLES = new Set(['TER', 'EST', 'ALA']);
+const ROLE_ORDER = { POR: 0, DIF: 1, TER: 2, MED: 3, CEN: 4, EST: 5, TRQ: 6, ALA: 7, ATT: 8 };
+
+// Valori originali (default) — identici a main.js
+const DEFAULT_Y = { POR: 85, DIF: 74, TER: 74, MED: 60, CEN: 50, EST: 50, TRQ: 35, ALA: 25, ATT: 20 };
+const DEFAULT_CENTRAL_X = { 1: [50], 2: [40, 60], 3: [35, 50, 65] };
+const DEFAULT_WIDE_X = [20, 80];
+
+let ROLE_PITCH_Y = { ...DEFAULT_Y };
+let CENTRAL_X = { 1: [...DEFAULT_CENTRAL_X[1]], 2: [...DEFAULT_CENTRAL_X[2]], 3: [...DEFAULT_CENTRAL_X[3]] };
+let WIDE_X = [...DEFAULT_WIDE_X];
+
+function computePitchPositions(entries) {
+  const byY = new Map();
+  entries.forEach(entry => {
+    const y = ROLE_PITCH_Y[entry.role] ?? 50;
+    if (!byY.has(y)) byY.set(y, []);
+    byY.get(y).push(entry);
+  });
+  const positioned = [];
+  byY.forEach((rowEntries, y) => {
+    const wide = rowEntries.filter(e => WIDE_ROLES.has(e.role));
+    const central = rowEntries.filter(e => !WIDE_ROLES.has(e.role));
+    const centralXs = CENTRAL_X[central.length]
+      || central.map((_, i) => central.length === 1 ? 50 : 12 + i * (76 / (central.length - 1)));
+    central.forEach((entry, i) => positioned.push({ ...entry, x: centralXs[i], y }));
+    wide.slice(0, 2).forEach((entry, i) => positioned.push({ ...entry, x: WIDE_X[i], y }));
+    wide.slice(2).forEach(entry => positioned.push({ ...entry, x: 50, y }));
+  });
+  return positioned;
+}
+
+const ROLE_POSITIONS = {
+  POR: [],
+  DIF: ['CENTRALE', 'IMPOSTAZIONE'],
+  TER: ['BASSO', 'SPINTA'],
+  MED: ['INCONTRISTA', 'REGISTA_BASSO'],
+  CEN: ['CENTRALE', 'MEZZALA'],
+  EST: ['OFFENSIVO', 'DIFENSIVO'],
+  TRQ: ['REGISTA_AVANZATO', 'RIFINITORE'],
+  ALA: ['ESTERNA', 'ACCENTRATA'],
+  ATT: ['CENTRAVANTI', 'SECONDA_PUNTA'],
+};
+const ROLE_POSITION_LABELS = {
+  CENTRALE: 'Centrale', IMPOSTAZIONE: "D'impostazione",
+  BASSO: 'Basso', SPINTA: 'Spinta',
+  INCONTRISTA: 'Incontrista', REGISTA_BASSO: 'Regista basso',
+  MEZZALA: 'Mezzala',
+  OFFENSIVO: 'Offensivo', DIFENSIVO: 'Difensivo',
+  REGISTA_AVANZATO: 'Regista avanzato', RIFINITORE: 'Rifinitore',
+  ESTERNA: 'Esterna', ACCENTRATA: 'Accentrata',
+  CENTRAVANTI: 'Centravanti', SECONDA_PUNTA: 'Seconda punta',
+};
+// Pool di cognomi fittizi solo per l'anteprima (nessun legame con i dati del gioco).
+const SAMPLE_SURNAMES = ['Rossi', 'Bianchi', 'Ferrari', 'Russo', 'Romano', 'Colombo', 'Ricci', 'Marino', 'Greco', 'Bruno', 'Gallo', 'Conti', 'De Luca', 'Costa', 'Fontana'];
+
+function buildEntries(formationName) {
+  const slots = FORMATIONS[formationName];
+  const entries = [];
+  let nameIdx = 0;
+  Object.entries(slots).forEach(([role, count]) => {
+    for (let i = 0; i < count; i++) {
+      const posCode = ROLE_POSITIONS[role]?.[i % Math.max(ROLE_POSITIONS[role].length, 1)];
+      const posLabel = posCode ? ROLE_POSITION_LABELS[posCode] : '';
+      const lastName = SAMPLE_SURNAMES[nameIdx++ % SAMPLE_SURNAMES.length];
+      const value = 65 + Math.round(Math.random() * 27); // 65-92, solo per l'anteprima
+      entries.push({ role, lastName, posLabel, value });
+    }
+  });
+  return entries.sort((a, b) => ROLE_ORDER[a.role] - ROLE_ORDER[b.role]);
+}
+
+const formationSelect = document.getElementById('formation-select');
+Object.keys(FORMATIONS).forEach(name => {
+  const opt = document.createElement('option');
+  opt.value = name;
+  opt.textContent = name;
+  formationSelect.appendChild(opt);
+});
+// Ricorda l'ultimo modulo scelto tra un ricaricamento e l'altro della pagina.
+const savedFormation = localStorage.getItem('pitch-tuner-formation');
+formationSelect.value = (savedFormation && FORMATIONS[savedFormation]) ? savedFormation : '4-3-3';
+
+let currentEntries = buildEntries(formationSelect.value);
+
+function render() {
+  const positioned = computePitchPositions(currentEntries);
+  const dotsSlot = document.getElementById('dots-slot');
+  dotsSlot.innerHTML = positioned.map(({ role, x, y, lastName, posLabel, value }) => `
+    <div class="pitch-dot-wrap zone-${ROLE_ZONE[role] || 'CEN'}" style="left:${x}%;top:${y}%" title="${role}">
+      <div class="pitch-dot-role">${lastName}</div>
+      <div class="pitch-dot"><span class="pitch-dot-value-text">${value}</span></div>
+      ${posLabel ? `<div class="pitch-dot-pos">(${posLabel})</div>` : ''}
+    </div>`).join('');
+  updateExport();
+}
+
+function updateExport() {
+  const yLines = Object.entries(ROLE_PITCH_Y).map(([r, v]) => `${r}: ${v}`).join(', ');
+  const box = document.getElementById('export-box');
+  box.textContent =
+`const ROLE_PITCH_Y = { ${yLines} };
+const CENTRAL_X = { 1: [${CENTRAL_X[1]}], 2: [${CENTRAL_X[2]}], 3: [${CENTRAL_X[3]}] };
+const WIDE_X = [${WIDE_X}];`;
+}
+
+// ── Slider ruoli Y ──
+const ySlidersDiv = document.getElementById('y-sliders');
+Object.keys(DEFAULT_Y).forEach(role => {
+  const row = document.createElement('div');
+  row.className = 'slider-row';
+  row.innerHTML = `
+    <label>${role}</label>
+    <input type="range" min="5" max="95" value="${DEFAULT_Y[role]}" id="y-${role}">
+    <output id="y-${role}-out">${DEFAULT_Y[role]}</output>`;
+  ySlidersDiv.appendChild(row);
+  const input = row.querySelector('input');
+  const out = row.querySelector('output');
+  input.addEventListener('input', () => {
+    ROLE_PITCH_Y[role] = Number(input.value);
+    out.textContent = input.value;
+    render();
+  });
+});
+
+// ── Slider CENTRAL_X / WIDE_X ──
+function bindSimpleSlider(id, onChange) {
+  const input = document.getElementById(id);
+  const out = document.getElementById(id + '-out');
+  input.addEventListener('input', () => {
+    out.textContent = input.value;
+    onChange(Number(input.value));
+    render();
+  });
+}
+bindSimpleSlider('cx1-0', v => CENTRAL_X[1][0] = v);
+bindSimpleSlider('cx2-0', v => CENTRAL_X[2][0] = v);
+bindSimpleSlider('cx2-1', v => CENTRAL_X[2][1] = v);
+bindSimpleSlider('cx3-0', v => CENTRAL_X[3][0] = v);
+bindSimpleSlider('cx3-1', v => CENTRAL_X[3][1] = v);
+bindSimpleSlider('cx3-2', v => CENTRAL_X[3][2] = v);
+bindSimpleSlider('wx-0', v => WIDE_X[0] = v);
+bindSimpleSlider('wx-1', v => WIDE_X[1] = v);
+
+document.getElementById('reset-btn').addEventListener('click', () => {
+  ROLE_PITCH_Y = { ...DEFAULT_Y };
+  CENTRAL_X = { 1: [...DEFAULT_CENTRAL_X[1]], 2: [...DEFAULT_CENTRAL_X[2]], 3: [...DEFAULT_CENTRAL_X[3]] };
+  WIDE_X = [...DEFAULT_WIDE_X];
+  Object.keys(DEFAULT_Y).forEach(role => {
+    document.getElementById(`y-${role}`).value = DEFAULT_Y[role];
+    document.getElementById(`y-${role}-out`).textContent = DEFAULT_Y[role];
+  });
+  document.getElementById('cx1-0').value = DEFAULT_CENTRAL_X[1][0]; document.getElementById('cx1-0-out').textContent = DEFAULT_CENTRAL_X[1][0];
+  document.getElementById('cx2-0').value = DEFAULT_CENTRAL_X[2][0]; document.getElementById('cx2-0-out').textContent = DEFAULT_CENTRAL_X[2][0];
+  document.getElementById('cx2-1').value = DEFAULT_CENTRAL_X[2][1]; document.getElementById('cx2-1-out').textContent = DEFAULT_CENTRAL_X[2][1];
+  document.getElementById('cx3-0').value = DEFAULT_CENTRAL_X[3][0]; document.getElementById('cx3-0-out').textContent = DEFAULT_CENTRAL_X[3][0];
+  document.getElementById('cx3-1').value = DEFAULT_CENTRAL_X[3][1]; document.getElementById('cx3-1-out').textContent = DEFAULT_CENTRAL_X[3][1];
+  document.getElementById('cx3-2').value = DEFAULT_CENTRAL_X[3][2]; document.getElementById('cx3-2-out').textContent = DEFAULT_CENTRAL_X[3][2];
+  document.getElementById('wx-0').value = DEFAULT_WIDE_X[0]; document.getElementById('wx-0-out').textContent = DEFAULT_WIDE_X[0];
+  document.getElementById('wx-1').value = DEFAULT_WIDE_X[1]; document.getElementById('wx-1-out').textContent = DEFAULT_WIDE_X[1];
+  render();
+});
+
+formationSelect.addEventListener('change', () => {
+  localStorage.setItem('pitch-tuner-formation', formationSelect.value);
+  currentEntries = buildEntries(formationSelect.value);
+  render();
+});
+render();
+</script>

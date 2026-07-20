@@ -1,0 +1,311 @@
+<meta charset="UTF-8">
+<title>Tuner allineamento capigliature</title>
+<style>
+  :root {
+    --bg: #12161f;
+    --panel: #1b2130;
+    --panel-border: #333c52;
+    --text: #e8ecf5;
+    --text-dim: #8b93a8;
+    --accent: #f0a013;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    display: flex;
+    min-height: 100vh;
+  }
+
+  #preview-col {
+    flex: 0 0 420px;
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    align-items: center;
+  }
+
+  #controls-col {
+    flex: 1;
+    padding: 24px 24px 60px;
+    overflow-y: auto;
+    max-height: 100vh;
+  }
+
+  h1 { font-size: 1.05rem; margin: 0; }
+
+  p.hint {
+    color: var(--text-dim);
+    font-size: .82rem;
+    margin: 0 0 16px;
+    max-width: 640px;
+    line-height: 1.5;
+  }
+
+  #stage {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    background: repeating-conic-gradient(#2a2f3d 0% 25%, #20242f 0% 50%) 50% / 20px 20px;
+    border: 2px solid var(--panel-border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  #stage img { position: absolute; top: 0; left: 0; width: 100%; height: 100%; image-rendering: pixelated; }
+  #base-img { z-index: 1; }
+  #hair-img { z-index: 2; transform-origin: center center; }
+
+  #thumb-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+    width: 100%;
+  }
+
+  .thumb {
+    aspect-ratio: 1 / 1;
+    background: repeating-conic-gradient(#2a2f3d 0% 25%, #20242f 0% 50%) 50% / 10px 10px;
+    border: 2px solid var(--panel-border);
+    border-radius: 4px;
+    cursor: pointer;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .thumb img { width: 100%; height: 100%; image-rendering: pixelated; }
+
+  .thumb.active { border-color: var(--accent); }
+
+  .thumb .thumb-label {
+    position: absolute;
+    bottom: 2px;
+    right: 3px;
+    font-size: .62rem;
+    color: #fff;
+    text-shadow: 0 0 2px #000, 0 0 2px #000;
+  }
+
+  fieldset {
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    margin: 0 0 16px;
+    padding: 12px 14px 16px;
+  }
+
+  legend {
+    font-size: .72rem;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--accent);
+    padding: 0 6px;
+  }
+
+  .slider-row {
+    display: grid;
+    grid-template-columns: 90px 1fr 56px;
+    align-items: center;
+    gap: 10px;
+    margin: 8px 0;
+  }
+
+  .slider-row label { font-size: .82rem; color: var(--text-dim); }
+
+  .slider-row output {
+    font-variant-numeric: tabular-nums;
+    font-size: .85rem;
+    text-align: right;
+  }
+
+  input[type="range"] { width: 100%; accent-color: var(--accent); }
+
+  #export-box {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    padding: 12px 14px;
+    font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+    font-size: .74rem;
+    white-space: pre;
+    overflow-x: auto;
+    color: #c9d4ea;
+    margin-top: 8px;
+    max-height: 320px;
+    overflow-y: auto;
+  }
+
+  #reset-btn, #reset-all-btn {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    padding: 8px 14px;
+    font-size: .8rem;
+    cursor: pointer;
+  }
+  #reset-btn:hover, #reset-all-btn:hover { border-color: var(--accent); }
+
+  .btn-row { display: flex; gap: 8px; }
+</style>
+
+<div id="preview-col">
+  <h1>Allineamento capigliatura</h1>
+  <div id="stage">
+    <img id="base-img" src="hair-align-assets/giocatorebase.png" alt="Giocatore base">
+    <img id="hair-img" src="hair-align-assets/hair_g01.png" alt="Capigliatura">
+  </div>
+  <div class="btn-row">
+    <button id="reset-btn" type="button">Reset questa</button>
+    <button id="reset-all-btn" type="button">Reset tutte</button>
+  </div>
+  <div id="thumb-grid"></div>
+</div>
+
+<div id="controls-col">
+  <p class="hint">
+    Clicca una miniatura per selezionarla, poi usa gli slider per farla
+    combaciare con la testa. Ogni pettinatura ricorda la propria posizione
+    (anche ricaricando la pagina) mentre passi da una all'altra. Quando sei
+    soddisfatto, copiami i valori dal riquadro in fondo — se vuoi, anche solo
+    quelli della pettinatura a cui tieni di più.
+  </p>
+
+  <fieldset>
+    <legend>Trasformazione — <span id="current-name">hair_g01</span></legend>
+    <div class="slider-row">
+      <label>Sposta X</label>
+      <input type="range" id="s-x" min="-100" max="100" value="0">
+      <output id="s-x-out">0</output>
+    </div>
+    <div class="slider-row">
+      <label>Sposta Y</label>
+      <input type="range" id="s-y" min="-100" max="100" value="0">
+      <output id="s-y-out">0</output>
+    </div>
+    <div class="slider-row">
+      <label>Scala orizz.</label>
+      <input type="range" id="s-scalex" min="30" max="180" value="100">
+      <output id="s-scalex-out">100%</output>
+    </div>
+    <div class="slider-row">
+      <label>Scala vert.</label>
+      <input type="range" id="s-scaley" min="30" max="180" value="100">
+      <output id="s-scaley-out">100%</output>
+    </div>
+    <div class="slider-row">
+      <label>Opacità</label>
+      <input type="range" id="s-opacity" min="20" max="100" value="100">
+      <output id="s-opacity-out">100%</output>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Valori di tutte le pettinature (da incollare in chat)</legend>
+    <div id="export-box"></div>
+  </fieldset>
+</div>
+
+<script>
+const NAMES = Array.from({ length: 16 }, (_, i) => `hair_g${String(i + 1).padStart(2, '0')}`);
+const DEFAULT_T = { x: 0, y: 0, scaleX: 100, scaleY: 100, opacity: 100 };
+const STORAGE_KEY = 'hair-tuner-transforms';
+
+let transforms = {};
+NAMES.forEach(n => transforms[n] = { ...DEFAULT_T });
+try {
+  const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+  NAMES.forEach(n => { if (saved[n]) transforms[n] = { ...DEFAULT_T, ...saved[n] }; });
+} catch (e) {}
+
+let current = NAMES[0];
+
+const hairImg = document.getElementById('hair-img');
+const thumbGrid = document.getElementById('thumb-grid');
+const currentName = document.getElementById('current-name');
+
+NAMES.forEach(name => {
+  const div = document.createElement('div');
+  div.className = 'thumb';
+  div.dataset.name = name;
+  div.innerHTML = `<img src="hair-align-assets/${name}.png" alt="${name}"><span class="thumb-label">${name.replace('hair_g', '')}</span>`;
+  div.addEventListener('click', () => selectHair(name));
+  thumbGrid.appendChild(div);
+});
+
+function selectHair(name) {
+  current = name;
+  hairImg.src = `hair-align-assets/${name}.png`;
+  currentName.textContent = name;
+  document.querySelectorAll('.thumb').forEach(t => t.classList.toggle('active', t.dataset.name === name));
+  const t = transforms[name];
+  document.getElementById('s-x').value = t.x;
+  document.getElementById('s-y').value = t.y;
+  document.getElementById('s-scalex').value = t.scaleX;
+  document.getElementById('s-scaley').value = t.scaleY;
+  document.getElementById('s-opacity').value = t.opacity;
+  document.getElementById('s-x-out').textContent = t.x;
+  document.getElementById('s-y-out').textContent = t.y;
+  document.getElementById('s-scalex-out').textContent = t.scaleX + '%';
+  document.getElementById('s-scaley-out').textContent = t.scaleY + '%';
+  document.getElementById('s-opacity-out').textContent = t.opacity + '%';
+  applyTransform();
+}
+
+function applyTransform() {
+  const t = transforms[current];
+  hairImg.style.transform = `translate(${t.x}px, ${t.y}px) scale(${t.scaleX / 100}, ${t.scaleY / 100})`;
+  hairImg.style.opacity = t.opacity / 100;
+}
+
+function persist() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(transforms));
+}
+
+function bindSlider(id, key, outSuffix) {
+  const input = document.getElementById(id);
+  const out = document.getElementById(id + '-out');
+  input.addEventListener('input', () => {
+    const v = Number(input.value);
+    transforms[current][key] = v;
+    out.textContent = outSuffix ? v + outSuffix : v;
+    applyTransform();
+    persist();
+    updateExport();
+  });
+}
+bindSlider('s-x', 'x', '');
+bindSlider('s-y', 'y', '');
+bindSlider('s-scalex', 'scaleX', '%');
+bindSlider('s-scaley', 'scaleY', '%');
+bindSlider('s-opacity', 'opacity', '%');
+
+document.getElementById('reset-btn').addEventListener('click', () => {
+  transforms[current] = { ...DEFAULT_T };
+  selectHair(current);
+  persist();
+  updateExport();
+});
+
+document.getElementById('reset-all-btn').addEventListener('click', () => {
+  NAMES.forEach(n => transforms[n] = { ...DEFAULT_T });
+  selectHair(current);
+  persist();
+  updateExport();
+});
+
+function updateExport() {
+  const lines = NAMES.map(n => {
+    const t = transforms[n];
+    return `${n}: { x: ${t.x}, y: ${t.y}, scaleX: ${t.scaleX}, scaleY: ${t.scaleY}, opacity: ${t.opacity} }`;
+  });
+  document.getElementById('export-box').textContent = lines.join('\n');
+}
+
+selectHair(current);
+updateExport();
+</script>

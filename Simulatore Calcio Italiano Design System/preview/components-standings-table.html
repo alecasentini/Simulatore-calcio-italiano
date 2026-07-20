@@ -1,0 +1,30 @@
+<!DOCTYPE html><html><head><meta charset="UTF-8">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; font-family: sans-serif; }
+body { background: #fff; padding: 16px; }
+table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+th, td { border: 1px solid #ddd; padding: 8px; text-align: center; }
+th { background: #f2f2f2; font-size: 0.78rem; color: #555; font-weight: 600; }
+.team-cell { display: flex; align-items: center; gap: 8px; text-align: left; }
+.jersey { display: inline-block; width: 14px; height: 14px; border: 1px solid #555; border-radius: 3px; flex-shrink: 0; }
+.promotion-zone { background: #d4edda; }
+.relegation-zone { background: #f8d7da; }
+.my-team { background: #e8f2ff !important; font-weight: 600; }
+.clickable { cursor: pointer; color: #1a6fc4; text-decoration: underline; font-weight: 700; }
+</style></head><body>
+<table>
+  <thead>
+    <tr><th>#</th><th style="text-align:left">Squadra</th><th>Pt</th><th>G</th><th>V</th><th>N</th><th>P</th><th>GF</th><th>GS</th><th>DR</th></tr>
+  </thead>
+  <tbody>
+    <tr class="promotion-zone"><td>1</td><td><div class="team-cell"><span class="jersey" style="background:#fff;border-color:#000"></span><span class="clickable">Juventus</span></div></td><td><strong>72</strong></td><td>34</td><td>22</td><td>6</td><td>6</td><td>68</td><td>28</td><td>+40</td></tr>
+    <tr class="promotion-zone"><td>2</td><td><div class="team-cell"><span class="jersey" style="background:#0055A4"></span><span class="clickable">Inter</span></div></td><td><strong>68</strong></td><td>34</td><td>20</td><td>8</td><td>6</td><td>60</td><td>30</td><td>+30</td></tr>
+    <tr class="promotion-zone my-team"><td>3</td><td><div class="team-cell"><span class="jersey" style="background:#AC0D0D"></span><span class="clickable">Milan</span></div></td><td><strong>65</strong></td><td>34</td><td>19</td><td>8</td><td>7</td><td>55</td><td>32</td><td>+23</td></tr>
+    <tr><td>4</td><td><div class="team-cell"><span class="jersey" style="background:#8A1E12"></span><span class="clickable">Roma</span></div></td><td><strong>58</strong></td><td>34</td><td>16</td><td>10</td><td>8</td><td>48</td><td>36</td><td>+12</td></tr>
+    <tr><td>5</td><td><div class="team-cell"><span class="jersey" style="background:#87CEEB"></span><span class="clickable">Napoli</span></div></td><td><strong>55</strong></td><td>34</td><td>15</td><td>10</td><td>9</td><td>52</td><td>40</td><td>+12</td></tr>
+    <tr class="relegation-zone"><td>18</td><td><div class="team-cell"><span class="jersey" style="background:#F4C2C2"></span><span class="clickable">Palermo</span></div></td><td><strong>28</strong></td><td>34</td><td>6</td><td>10</td><td>18</td><td>28</td><td>58</td><td>-30</td></tr>
+    <tr class="relegation-zone"><td>19</td><td><div class="team-cell"><span class="jersey" style="background:#fff"></span><span class="clickable">Bari</span></div></td><td><strong>24</strong></td><td>34</td><td>5</td><td>9</td><td>20</td><td>22</td><td>65</td><td>-43</td></tr>
+    <tr class="relegation-zone"><td>20</td><td><div class="team-cell"><span class="jersey" style="background:#fff"></span><span class="clickable">Vicenza</span></div></td><td><strong>18</strong></td><td>34</td><td>3</td><td>9</td><td>22</td><td>18</td><td>72</td><td>-54</td></tr>
+  </tbody>
+</table>
+</body></html>

@@ -1,0 +1,25 @@
+<!DOCTYPE html><html><head><meta charset="UTF-8">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; font-family: sans-serif; }
+body { background: #fff; padding: 16px; }
+.grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.token { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.demo { background: #007bff; }
+.label { font-size: 10px; color: #888; }
+.name { font-size: 11px; font-weight: 700; color: #333; }
+</style></head><body>
+<div class="grid">
+  <div class="token"><div class="demo" style="width:4px;height:20px;border-radius:4px"></div><div class="name">space-1</div><div class="label">4px</div></div>
+  <div class="token"><div class="demo" style="width:8px;height:20px;border-radius:4px"></div><div class="name">space-2</div><div class="label">8px · table cell</div></div>
+  <div class="token"><div class="demo" style="width:10px;height:20px;border-radius:4px"></div><div class="name">space-3</div><div class="label">10px · summary pad</div></div>
+  <div class="token"><div class="demo" style="width:12px;height:20px;border-radius:4px"></div><div class="name">space-4</div><div class="label">12px · modal rows</div></div>
+  <div class="token"><div class="demo" style="width:14px;height:20px;border-radius:4px"></div><div class="name">space-5</div><div class="label">14px · modal pad</div></div>
+  <div class="token"><div class="demo" style="width:16px;height:20px;border-radius:4px"></div><div class="name">space-6</div><div class="label">16px</div></div>
+  <div class="token"><div class="demo" style="width:20px;height:20px;border-radius:4px"></div><div class="name">space-8</div><div class="label">20px · body pad</div></div>
+  <div class="token"><div class="demo" style="width:24px;height:20px;border-radius:4px"></div><div class="name">space-10</div><div class="label">24px · modal content</div></div>
+  <div class="token"><div class="demo" style="width:30px;height:20px;border-radius:4px"></div><div class="name">space-16</div><div class="label">30px · modal content</div></div>
+  <div class="token"><div class="demo" style="width:40px;height:20px;border-radius:4px"></div><div class="name">space-20</div><div class="label">40px</div></div>
+  <div class="token"><div class="demo" style="width:50px;height:20px;border-radius:4px"></div><div class="name">space-24</div><div class="label">50px · section sep</div></div>
+  <div class="token"><div class="demo" style="width:60px;height:20px;border-radius:4px"></div><div class="name">body-top</div><div class="label">60px · sticky offset</div></div>
+</div>
+</body></html>

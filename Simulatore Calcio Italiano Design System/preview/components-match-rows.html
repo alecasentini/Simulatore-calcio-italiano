@@ -1,0 +1,28 @@
+<!DOCTYPE html><html><head><meta charset="UTF-8">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; font-family: sans-serif; }
+body { background: #fff; padding: 16px; }
+.match-row { display: grid; grid-template-columns: 1fr 50px 1fr; align-items: center; margin-bottom: 4px; border-bottom: 1px solid #f9f9f9; font-size: 0.88rem; }
+.match-row span:nth-child(1) { text-align: right; }
+.match-row span:nth-child(2) { text-align: center; font-weight: bold; background: #f1f1f1; border-radius: 4px; padding: 2px 4px; }
+.match-row span:nth-child(3) { text-align: left; }
+.match-scorers { display: grid; grid-template-columns: 1fr 50px 1fr; font-size: 0.72rem; color: #888; margin-bottom: 6px; }
+.match-scorers span:nth-child(1) { text-align: right; padding-right: 4px; }
+.match-scorers span:nth-child(3) { text-align: left; padding-left: 4px; }
+.my-team { background: #e8f2ff !important; font-weight: 600; }
+.my-team span:first-child, .my-team span:last-child { color: #1a4a8a; }
+.highlight { border: 2px solid #007bff; border-radius: 8px; padding: 10px; background: #f0f7ff; margin-bottom: 14px; }
+.highlight h3 { margin: 0 0 8px; font-size: 0.95rem; }
+</style></head><body>
+<div class="highlight">
+  <h3>Giornata 15 (Andata)</h3>
+  <div class="match-row my-team"><span>Milan</span><span>2-1</span><span>Juventus</span></div>
+  <div class="match-scorers"><span>Rossi 23', Bianchi 67'</span><span></span><span>Del Piero 45'</span></div>
+  <div class="match-row"><span>Inter</span><span>0-0</span><span>Napoli</span></div>
+  <div class="match-scorers"><span></span><span></span><span></span></div>
+  <div class="match-row"><span>Roma</span><span>3-2</span><span>Lazio</span></div>
+  <div class="match-scorers"><span>Totti 12', 44', 78'</span><span></span><span>Mancini 30', 55'</span></div>
+  <div class="match-row"><span>Atalanta</span><span>1-1</span><span>Fiorentina</span></div>
+  <div class="match-scorers"><span>Grassi 60'</span><span></span><span>Viola 35'</span></div>
+</div>
+</body></html>

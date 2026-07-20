@@ -1,0 +1,77 @@
+<!DOCTYPE html><html><head><meta charset="UTF-8">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; font-family: sans-serif; }
+body { background: #fff; padding: 16px; }
+.row { display: flex; align-items: center; padding: 9px 10px; border-radius: 7px; margin-bottom: 6px; background: #f4f6fa; gap: 10px; font-size: 0.88rem; }
+.row.done { background: #eefaf0; color: #555; font-size: 0.88rem; }
+.pinfo { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 1; }
+.name { font-weight: 700; color: #1a2e45; }
+.badge { background: #e8eef8; color: #1a6fc4; padding: 1px 7px; border-radius: 4px; font-size: 0.78rem; font-weight: 600; }
+.meta { color: #666; font-size: 0.82rem; }
+.acts { display: flex; align-items: center; gap: 6px; }
+button { padding: 5px 12px; border-radius: 5px; border: none; font-size: 0.82rem; font-weight: 600; cursor: pointer; }
+.green { background: #2ecc71; color: #fff; }
+.red { background: #e74c3c; color: #fff; }
+.blue { background: #2980b9; color: #fff; }
+.price { font-size: 0.95rem; color: #1a2e45; white-space: nowrap; }
+.label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: #bbb; margin-bottom: 6px; }
+</style></head><body>
+<div class="label">Transfer Market Rows</div>
+<div class="row">
+  <div class="pinfo">
+    <span class="name">Marco Rossi</span>
+    <span class="badge">ATT</span>
+    <span class="meta">24a</span>
+    <span class="meta">⚡78</span>
+    <span class="meta" style="color:#666">🏟️ Juventus</span>
+  </div>
+  <div class="acts">
+    <span class="price">8.5M€</span>
+    <button class="green">Acquista</button>
+  </div>
+</div>
+<div class="row">
+  <div class="pinfo">
+    <span class="name">Luca Ferrari</span>
+    <span class="badge">CEN</span>
+    <span class="meta">28a</span>
+    <span class="meta">⚡71</span>
+    <span class="meta" style="color:#1a8a45;font-weight:600">✓ Svincolato</span>
+  </div>
+  <div class="acts">
+    <span class="price">0M€</span>
+    <button class="blue">Ingaggia</button>
+  </div>
+</div>
+<div class="row done">
+  ✅ <strong>Andrea Bianchi</strong> acquistato — 4.2M€
+</div>
+
+<div class="label" style="margin-top:12px">Renewal Rows</div>
+<div class="row">
+  <div class="pinfo">
+    <span class="name">Stefano Greco</span>
+    <span class="badge">DIF</span>
+    <span class="meta">31a</span>
+    <span class="meta">⚡68</span>
+    <span class="meta" style="color:#666">45k€ → <strong>52k€</strong>/mese</span>
+  </div>
+  <div class="acts">
+    <button class="green">Rinnova</button>
+    <button class="red">Svincola</button>
+  </div>
+</div>
+<div class="row">
+  <div class="pinfo">
+    <span class="name">Paolo Conti</span>
+    <span class="badge">ATT</span>
+    <span class="meta">29a</span>
+    <span class="meta">⚡82</span>
+    <span class="meta" style="color:#666">72k€ → <strong>89k€</strong>/mese</span>
+  </div>
+  <div class="acts">
+    <button class="green">Rinnova</button>
+    <button class="red">Svincola</button>
+  </div>
+</div>
+</body></html>

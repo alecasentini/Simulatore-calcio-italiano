@@ -1,0 +1,228 @@
+<meta charset="UTF-8">
+<title>Mockup — ritratto angolo, sfondo dithering vs sfondo chiaro + stemma</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+<style>
+  body {
+    margin: 0;
+    padding: 48px;
+    background: #1a1f2c;
+    display: flex;
+    gap: 48px;
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .demo-label {
+    color: #f0a013;
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    font-size: .8rem;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    margin-bottom: 14px;
+  }
+
+  .demo-wrap .player-card-overlay {
+    position: static;
+    display: block;
+    background: none;
+    padding: 0;
+  }
+
+  .demo-wrap .player-card-box {
+    position: relative;
+    width: 620px;
+    max-width: 620px;
+  }
+
+  /* ── Variante B: sfondo chiaro + stemma opacizzato ── */
+  .pc-portrait-frame.variant-crest {
+    background: #eef1f6;
+  }
+
+  .pc-portrait-frame.variant-crest .pc-portrait-dither {
+    display: none;
+  }
+
+  .pc-portrait-frame.variant-crest .crest-bg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    z-index: 0;
+  }
+
+  .pc-portrait-frame.variant-crest .crest-bg img {
+    width: 92%;
+    height: 92%;
+    object-fit: contain;
+    opacity: .35;
+    image-rendering: pixelated;
+  }
+
+  .pc-portrait-frame.variant-crest.on-white {
+    background: #ffffff;
+  }
+
+  .pc-portrait-frame.variant-crest.on-gray {
+    background: #e4e7ee;
+  }
+</style>
+
+<div>
+  <div class="demo-label">A — sfondo dithering colori squadra (attuale)</div>
+  <div class="demo-wrap">
+    <div class="player-card-overlay">
+      <div class="player-card-box has-portrait">
+        <button class="player-card-close">✕</button>
+        <div class="pc-portrait-frame">
+          <canvas class="pc-portrait-dither" width="16" height="16" data-c1="#000000" data-c2="#FFFFFF"></canvas>
+          <div class="pc-portrait-photo"></div>
+        </div>
+        <div class="player-card-scroll">
+          <div class="player-card-header">
+            <span class="flag-icon" style="display:inline-block;width:20px;height:14px;background:linear-gradient(90deg,#009246 33%,#fff 33% 66%,#ce2b37 66%)"></span>
+            <span class="player-card-name">Francesco Vicari</span>
+            <span class="player-card-role role-POR">POR</span>
+          </div>
+          <div class="player-card-stats">
+            <span>Età: <strong>25</strong></span>
+            <span>Forza: <strong>78</strong></span>
+            <span>Squadra: <strong>Juventus</strong></span>
+          </div>
+          <div class="player-card-stats" style="margin-top:4px">
+            <span>⚽ Gol: <strong>0</strong></span>
+            <span>🅰️ Assist: <strong>0</strong></span>
+            <span>🟨 Amm: <strong>0</strong></span>
+          </div>
+          <div class="pc-sections">
+            <div class="pc-section">
+              <h4>Contratto</h4>
+              <div class="pc-contract"><div class="pc-contract-row"><span>Durata residua</span><strong>3 anni</strong></div></div>
+            </div>
+            <div class="pc-section">
+              <h4>Personalità</h4>
+              <div class="pc-personality"><div class="pc-pers-row"><span>Ambizione</span><span class="pc-bar"><span style="width:72%"></span></span></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div>
+  <div class="demo-label">B — sfondo bianco + stemma opacizzato</div>
+  <div class="demo-wrap">
+    <div class="player-card-overlay">
+      <div class="player-card-box has-portrait">
+        <button class="player-card-close">✕</button>
+        <div class="pc-portrait-frame variant-crest on-white">
+          <div class="crest-bg"><img src="../assets/loghi/pixel/juventus.png" alt=""></div>
+          <div class="pc-portrait-photo"></div>
+        </div>
+        <div class="player-card-scroll">
+          <div class="player-card-header">
+            <span class="flag-icon" style="display:inline-block;width:20px;height:14px;background:linear-gradient(90deg,#009246 33%,#fff 33% 66%,#ce2b37 66%)"></span>
+            <span class="player-card-name">Francesco Vicari</span>
+            <span class="player-card-role role-POR">POR</span>
+          </div>
+          <div class="player-card-stats">
+            <span>Età: <strong>25</strong></span>
+            <span>Forza: <strong>78</strong></span>
+            <span>Squadra: <strong>Juventus</strong></span>
+          </div>
+          <div class="player-card-stats" style="margin-top:4px">
+            <span>⚽ Gol: <strong>0</strong></span>
+            <span>🅰️ Assist: <strong>0</strong></span>
+            <span>🟨 Amm: <strong>0</strong></span>
+          </div>
+          <div class="pc-sections">
+            <div class="pc-section">
+              <h4>Contratto</h4>
+              <div class="pc-contract"><div class="pc-contract-row"><span>Durata residua</span><strong>3 anni</strong></div></div>
+            </div>
+            <div class="pc-section">
+              <h4>Personalità</h4>
+              <div class="pc-personality"><div class="pc-pers-row"><span>Ambizione</span><span class="pc-bar"><span style="width:72%"></span></span></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div>
+  <div class="demo-label">C — sfondo grigio chiaro + stemma opacizzato</div>
+  <div class="demo-wrap">
+    <div class="player-card-overlay">
+      <div class="player-card-box has-portrait">
+        <button class="player-card-close">✕</button>
+        <div class="pc-portrait-frame variant-crest on-gray">
+          <div class="crest-bg"><img src="../assets/loghi/pixel/juventus.png" alt=""></div>
+          <div class="pc-portrait-photo"></div>
+        </div>
+        <div class="player-card-scroll">
+          <div class="player-card-header">
+            <span class="flag-icon" style="display:inline-block;width:20px;height:14px;background:linear-gradient(90deg,#009246 33%,#fff 33% 66%,#ce2b37 66%)"></span>
+            <span class="player-card-name">Francesco Vicari</span>
+            <span class="player-card-role role-POR">POR</span>
+          </div>
+          <div class="player-card-stats">
+            <span>Età: <strong>25</strong></span>
+            <span>Forza: <strong>78</strong></span>
+            <span>Squadra: <strong>Juventus</strong></span>
+          </div>
+          <div class="player-card-stats" style="margin-top:4px">
+            <span>⚽ Gol: <strong>0</strong></span>
+            <span>🅰️ Assist: <strong>0</strong></span>
+            <span>🟨 Amm: <strong>0</strong></span>
+          </div>
+          <div class="pc-sections">
+            <div class="pc-section">
+              <h4>Contratto</h4>
+              <div class="pc-contract"><div class="pc-contract-row"><span>Durata residua</span><strong>3 anni</strong></div></div>
+            </div>
+            <div class="pc-section">
+              <h4>Personalità</h4>
+              <div class="pc-personality"><div class="pc-pers-row"><span>Ambizione</span><span class="pc-bar"><span style="width:72%"></span></span></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Riusa esattamente la logica reale del gioco (drawDitherBadge) per il
+  // pannello A, e compone il ritratto di esempio (foto reale generata prima)
+  // per tutti e 3 i pannelli.
+  const DITHER_BAYER_4X4 = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
+  function drawDitherBadge(canvas, color1, color2) {
+    const n = canvas.width;
+    const ctx = canvas.getContext('2d');
+    for (let y = 0; y < n; y++) {
+      for (let x = 0; x < n; x++) {
+        const t = (x + y) / (2 * (n - 1));
+        const thresh = DITHER_BAYER_4X4[y % 4][x % 4] / 16;
+        ctx.fillStyle = t > thresh ? color2 : color1;
+        ctx.fillRect(x, y, 1, 1);
+      }
+    }
+  }
+  document.querySelectorAll('.pc-portrait-dither').forEach(c => {
+    drawDitherBadge(c, c.dataset.c1, c.dataset.c2);
+  });
+  document.querySelectorAll('.pc-portrait-photo').forEach(el => {
+    el.innerHTML = `<div class="player-portrait-badge" style="width:90px;height:90px">
+      <div class="player-portrait-stage" style="width:372px;height:372px;transform-origin:top left;transform:scale(0.24193548387096775);position:relative">
+        <img src="preview/portrait_sample.png" style="position:absolute;top:0;left:0;width:100%;height:100%" alt="">
+      </div>
+    </div>`;
+  });
+</script>

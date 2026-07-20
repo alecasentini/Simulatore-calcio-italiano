@@ -1,0 +1,48 @@
+<!DOCTYPE html><html><head><meta charset="UTF-8">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; font-family: sans-serif; }
+body { background: #f0f0f0; padding: 16px; }
+.card { background: #fff; border-radius: 10px; padding: 20px 24px; box-shadow: 0 8px 32px rgba(0,0,0,.2); max-width: 440px; }
+.header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.name { font-size: 1.2rem; font-weight: 700; }
+.role { background: #e8eef8; color: #1a6fc4; padding: 2px 8px; border-radius: 4px; font-size: 0.82rem; font-weight: 600; }
+.stats { display: flex; gap: 18px; margin-bottom: 14px; font-size: 0.9rem; color: #444; }
+.section-label { font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: #557; margin-bottom: 5px; }
+.pc-sections { display: flex; gap: 14px; }
+.pc-section { flex: 1; }
+.contract-box { background: #f7f9fc; border-radius: 6px; padding: 8px 10px; font-size: 0.82rem; }
+.contract-row { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px solid #eef0f5; }
+.contract-row:last-child { border-bottom: none; }
+.contract-row span { color: #666; }
+.pers-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 0.82rem; }
+.pers-row > span { width: 60px; color: #666; flex-shrink: 0; }
+.bar-bg { flex: 1; background: #dde2ee; border-radius: 4px; height: 8px; overflow: hidden; }
+.bar-fill { display: block; height: 100%; background: #4a7fcb; border-radius: 4px; }
+</style></head><body>
+<div class="card">
+  <div class="header">
+    <div class="name">Marco Rossi</div>
+    <div class="role">ATT</div>
+  </div>
+  <div class="stats"><span>24 anni</span><span>⚡ Forza: 78</span><span>🏟️ Milan</span></div>
+  <div class="pc-sections">
+    <div class="pc-section">
+      <div class="section-label">Contratto</div>
+      <div class="contract-box">
+        <div class="contract-row"><span>Durata</span><strong>2 anni</strong></div>
+        <div class="contract-row"><span>Stipendio</span><strong>61k€/mese</strong></div>
+        <div class="contract-row"><span>Clausola</span><strong>18.5M€</strong></div>
+        <div class="contract-row"><span>Bonus Titolo</span><strong>120k€</strong></div>
+      </div>
+    </div>
+    <div class="pc-section">
+      <div class="section-label">Personalità</div>
+      <div style="background:#f7f9fc;border-radius:6px;padding:8px 10px">
+        <div class="pers-row"><span>Ambiz.</span><div class="bar-bg"><span class="bar-fill" style="width:72%"></span></div></div>
+        <div class="pers-row"><span>Fedeltà</span><div class="bar-bg"><span class="bar-fill" style="width:45%"></span></div></div>
+        <div class="pers-row"><span>Avidità</span><div class="bar-bg"><span class="bar-fill" style="width:30%"></span></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+</body></html>
