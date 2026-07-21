@@ -2684,6 +2684,24 @@ details[open] summary::after {
   box-shadow: 2px 2px 0 var(--border-default);
 }
 
+.news-team-filter-wrap {
+  padding: 8px 18px;
+  border-bottom: 2px dashed var(--paper-line);
+}
+
+.news-team-filter {
+  font-family: var(--font-display);
+  font-size: 0.7rem;
+  letter-spacing: var(--tracking-label);
+  padding: 5px 10px;
+  cursor: pointer;
+  border: var(--border-hard-sm);
+  background: var(--bg-default);
+  color: var(--text-primary);
+  box-shadow: 2px 2px 0 var(--border-default);
+  max-width: 100%;
+}
+
 .news-cat-tab.active {
   background: var(--color-navy);
   color: var(--text-on-dark);
@@ -2780,6 +2798,18 @@ details[open] summary::after {
 
 .news-roundup-row:last-child {
   border-bottom: none;
+}
+
+.news-season-divider {
+  font-family: var(--font-display);
+  font-size: 0.72rem;
+  letter-spacing: var(--tracking-label);
+  text-align: center;
+  padding: 6px 8px;
+  margin: 4px 0;
+  background: var(--color-navy);
+  color: var(--text-on-dark);
+  border: var(--border-hard-sm);
 }
 
 .news-roundup-row .news-cross {

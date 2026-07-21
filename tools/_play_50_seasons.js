@@ -167,6 +167,8 @@ const USER_DATA_DIR = path.resolve(__dirname, '_play_profile');
       acted = await clickIfVisible('[data-outcome="renew"]');
     } else if (await isVisible('[data-outcome="stay"]')) {
       acted = await clickIfVisible('[data-outcome="stay"]');
+    } else if (await clickIfVisible('#wr-continue')) {
+      acted = true;
     } else if (await clickIfVisible('#previsioni-continue')) {
       acted = true;
     } else if (await clickIfVisible('#pb-close')) {
