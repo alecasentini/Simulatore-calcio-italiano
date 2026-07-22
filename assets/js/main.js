@@ -1873,11 +1873,24 @@ function pickActiveFormation(team) {
 // questo, un titolare vero ma temporaneamente poco in forma finiva
 // scambiato per esubero e proposto in vendita/prestito (la forma torna su
 // da sola, non è un motivo per giudicare il valore di un giocatore).
+// Unione dei titolari/riserve di ENTRAMBI i moduli preferiti dell'allenatore
+// (team.coach.formations, sempre una coppia — vedi pickFormationPair), non
+// solo quello attivo in questo momento: un giocatore che gioca solo nel
+// modulo "di riserva" della squadra (es. un'ala in una squadra che alterna
+// 3-4-3/3-4-2-1) è comunque un titolare/riserva vera, non un esubero — prima
+// veniva marcato fuori sistema tattico e rischiava lo svincolo solo perché
+// il modulo attivo in quel momento non aveva slot per lui.
 function getSquadTiers(team) {
-  const formation = pickActiveFormation(team);
-  const starters = new Set(getBest11(team.roster, formation, { ignoreForma: true }).map(e => e.player));
+  const formations = team.coach?.formations?.length ? team.coach.formations : [pickActiveFormation(team)];
+  const starters = new Set();
+  formations.forEach(formation => {
+    getBest11(team.roster, formation, { ignoreForma: true }).forEach(e => starters.add(e.player));
+  });
   const rest = team.roster.filter(p => !starters.has(p));
-  const reserves = new Set(getBest11(rest, formation, { ignoreForma: true }).map(e => e.player));
+  const reserves = new Set();
+  formations.forEach(formation => {
+    getBest11(rest, formation, { ignoreForma: true }).forEach(e => reserves.add(e.player));
+  });
   return { starters, reserves };
 }
 
@@ -2429,7 +2442,10 @@ function getBudgetPoolTotalK(team) {
   return Math.round(team.budget * 1000) + annualSalary(team.wageBudgetCap);
 }
 
-function buildBudgetSliderHtml(team) {
+// `readOnly` (bool): mostra il cursore ma disabilitato — usato dal gate
+// rinnovi (renewalGate), dove ogni tab/controllo resta visibile per
+// contesto ma non interagibile finché i rinnovi non sono tutti decisi.
+function buildBudgetSliderHtml(team, readOnly) {
   if (!Number.isFinite(team.wageBudgetCap)) return '';
   const wageCapNowK = annualSalary(team.wageBudgetCap);
   const wageBillFloorK = annualSalary(getTeamWageBill(team));
@@ -2441,7 +2457,7 @@ function buildBudgetSliderHtml(team) {
     <div class="mm-budget-slider">
       <div class="mm-budget-slider-row">
         <span>${icon('money')} Budget acquisti: <strong>${team.budget.toFixed(2)}M€</strong></span>
-        <input type="range" id="mm-budget-slider" min="${min}" max="${max}" step="50" value="${wageCapNowK}">
+        <input type="range" id="mm-budget-slider" min="${min}" max="${max}" step="50" value="${wageCapNowK}"${readOnly ? ' disabled' : ''}>
         <span>${icon('briefcase')} Monte ingaggi: <strong>${formatMoneyK(wageCapNowK)}€/anno</strong></span>
       </div>
       <div class="mm-budget-slider-note">Sposta il cursore per ripartire il totale (${formatMoneyK(totalK)}€/anno equivalente) tra budget acquisti e monte ingaggi — non può scendere sotto quanto già impegnato in contratti in corso.</div>
@@ -2481,6 +2497,61 @@ function getTeamWageBill(team) {
 function wageCapAllows(team, addSalary, removeSalary) {
   if (!Number.isFinite(team.wageBudgetCap)) return true;
   return getTeamWageBill(team) - (removeSalary || 0) + addSalary <= team.wageBudgetCap;
+}
+
+// ─── RIBILANCIAMENTO AUTOMATICO BUDGET/MONTE INGAGGI (CPU) ────────────────────
+// Stessa libertà del cursore umano (buildBudgetSliderHtml/wireBudgetSlider,
+// sopra): davanti a un affare che non passerebbe per un solo tetto (budget
+// trasferimenti insufficiente per il cartellino, o monte ingaggi insufficiente
+// per lo stipendio), una CPU può spostare l'eccedenza dall'altro tetto invece
+// di rinunciare — mai creando soldi dal nulla, e mai scendendo sotto quanto
+// già impegnato in stipendi correnti. `canRebalanceForDeal` è una verifica
+// pura (nessuna mutazione): usata durante la valutazione di più candidati in
+// getMarketTurnOptions, dove solo UNO verrà davvero eseguito e non si può
+// spostare budget reale per ognuno solo per scartarlo poco dopo.
+// `commitRebalanceForDeal` applica per davvero lo spostamento, chiamata solo
+// dentro le execute* al momento in cui l'affare scelto viene concluso.
+function canRebalanceForDeal(team, costM, addSalaryMonthlyK) {
+  if (!Number.isFinite(team.wageBudgetCap)) return true;
+  let budget = team.budget, wageCap = team.wageBudgetCap;
+  const wageBillFloorK = getTeamWageBill(team);
+  if (budget < costM) {
+    const shortfallM = costM - budget;
+    const shortfallMonthlyK = (shortfallM * 1000) / 12;
+    const spareWageMonthlyK = wageCap - wageBillFloorK;
+    if (spareWageMonthlyK < shortfallMonthlyK) return false;
+    wageCap -= shortfallMonthlyK;
+    budget += shortfallM;
+  }
+  if (addSalaryMonthlyK != null) {
+    const neededWageCapK = wageBillFloorK + addSalaryMonthlyK;
+    const deltaMonthlyK = neededWageCapK - wageCap;
+    if (deltaMonthlyK > 0) {
+      const deltaM = annualSalary(deltaMonthlyK) / 1000;
+      const availableM = budget - costM;
+      if (availableM < deltaM) return false;
+    }
+  }
+  return true;
+}
+
+function commitRebalanceForDeal(team, costM, addSalaryMonthlyK) {
+  if (!Number.isFinite(team.wageBudgetCap)) return;
+  if (team.budget < costM) {
+    const shortfallM = costM - team.budget;
+    const shortfallMonthlyK = (shortfallM * 1000) / 12;
+    team.wageBudgetCap -= shortfallMonthlyK;
+    team.budget += shortfallM;
+  }
+  if (addSalaryMonthlyK != null && !wageCapAllows(team, addSalaryMonthlyK)) {
+    const neededWageCapK = getTeamWageBill(team) + addSalaryMonthlyK;
+    const deltaMonthlyK = neededWageCapK - team.wageBudgetCap;
+    if (deltaMonthlyK > 0) {
+      const deltaM = annualSalary(deltaMonthlyK) / 1000;
+      team.budget -= deltaM;
+      team.wageBudgetCap += deltaMonthlyK;
+    }
+  }
 }
 
 function getPresidentPersonalityLabel(president) {
@@ -2578,21 +2649,59 @@ function createPersonality() {
   };
 }
 
+// Esito unificato del rinnovo — CPU e UMANO, stessa identica formula: 0 =
+// rifiuta, altrimenti anni offerti. Un solo punteggio continuo invece di due
+// dadi separati (prima: accetta/rifiuta con uno stayScore, poi SE accetta
+// anni fissi/a scelta del giocatore). Lealtà, prestigio del club e bonus età
+// spingono verso l'alto; ambizione e avidità verso il basso. "Pesce grosso in
+// stagno piccolo" (fitPenalty): un giocatore molto più forte della propria
+// squadra è realisticamente molto più propenso a rifiutare — un top player
+// già in un club che gli sta bene (es. 90 di forza in una big di Serie A)
+// non deve invece rifiutare quasi mai solo per sfortuna, dato che lì la
+// penalità resta vicina a zero. `valueBonus`: un club si impegna di più a
+// trattenere un giocatore forte (offerte migliori, promesse di ruolo) —
+// indipendente dal fit con la squadra attuale, tara il tasso di rifiuto "di
+// base" dei top player anche a personalità neutra (target: ≤20% per un 90 di
+// forza ben assortito in una big). Pesi ambizione/avidità tenuti bassi: una
+// personalità NEUTRA (50/50/50) deve accettare almeno ~60% delle volte come
+// campione di massima, a prescindere dalla forza — il disadattamento vero
+// (fitPenalty) resta l'unico motivo per cui un rifiuto diventa quasi certo.
+// Punteggio → anni: ≤20 rifiuta, poi scaglioni da 20 punti (21-40 → 1 anno,
+// 41-60 → 2, 61-80 → 3, 81-100 → 4, >100 → 5), vincolati infine al minimo/
+// massimo di getContractDurationRange (forza/età) se il giocatore accetta.
+function computeRenewalOutcome(player, team) {
+  const { loyalty, ambition, greed } = player.personality;
+  const prestige = getTeamPrestige(team.name);
+  const ageBonus = Math.max(0, (player.age - 32) * 3);
+  const overqualified = Math.max(0, player.strength - (team.strength || 0));
+  const fitPenalty = overqualified * (0.3 + ambition / 100 * 0.3);
+  const valueBonus = (player.strength - 50) * 0.2;
+  const noise = Math.random() * 25;
+  const score = loyalty * 0.55 + prestige - ambition * 0.15 - greed * 0.08 + ageBonus - fitPenalty + valueBonus + noise;
+  if (score <= 20) return 0;
+  const tier = Math.min(5, Math.max(1, Math.ceil((score - 20) / 20)));
+  const [minDur, maxDur] = getContractDurationRange(player.strength, player.age);
+  return Math.max(minDur, Math.min(maxDur, tier));
+}
+
+// Motivo del rifiuto (CPU e umano, stesso testo) — puramente in base
+// all'ambizione, come già era per la CPU prima dell'unificazione.
+function getRenewalRefusalReason(player) {
+  return player.personality.ambition > 65 ? 'cerca una sfida più ambiziosa' : 'vuole un nuovo progetto';
+}
+
 // Tenta il rinnovo contratto. Restituisce true se firmato
 function tryRenewContract(player, team) {
   if (!player.personality) player.personality = createPersonality();
-  const { ambition, loyalty, greed } = player.personality;
-  const prestige = getTeamPrestige(team.name);
+  const { greed } = player.personality;
 
   // Stipendio richiesto: mercato attuale + premio greed (0-40% extra)
   const marketSalary = getDisplaySalary(player.strength);
   const demandedSalary = Math.round(marketSalary * (1.0 + greed * 0.004));
 
-  // Vuole restare? I veterani (>32) sono più stabili; squadre blasonante trattengono i talenti
-  const ageBonus = Math.max(0, (player.age - 32) * 3);
-  const stayScore = loyalty * 0.55 + prestige - ambition * 0.25 + ageBonus + Math.random() * 25;
-  if (stayScore <= 20) {
-    const reason = ambition > 65 ? 'cerca una sfida più ambiziosa' : 'vuole un nuovo progetto';
+  const duration = computeRenewalOutcome(player, team);
+  if (duration === 0) {
+    const reason = getRenewalRefusalReason(player);
     transferLog.push(`${icon('clipboard')} <em>${player.firstName} ${player.lastName}</em> rifiuta il rinnovo con <strong>${team.name}</strong> (${reason})`);
     return false;
   }
@@ -2606,7 +2715,7 @@ function tryRenewContract(player, team) {
   // Firma rinnovo
   if (!player.contract) player.contract = createContract(player.strength, player.age);
   player.contract.salary = demandedSalary;
-  player.contract.duration = 2 + Math.floor(Math.random() * 3); // 2-4 anni
+  player.contract.duration = duration;
   transferLog.push(`${icon('clipboard')} <em>${player.firstName} ${player.lastName}</em> rinnova con <strong>${team.name}</strong> — ${player.contract.duration} anni, ${formatMoneyK(annualSalary(demandedSalary))}€/anno`);
   return true;
 }
@@ -2734,6 +2843,57 @@ function calculatePoints(match) {
   }
 }
 
+// ─── SPAREGGIO CLASSIFICA (a parità di punti) ──────────────────────────────
+// Ordine: punti → differenza reti → gol fatti → scontri diretti (punti negli
+// scontri diretti, poi differenza reti nei soli scontri diretti). Gli
+// scontri diretti cercano i risultati reali nelle rounds della stagione in
+// corso (s_roundsA/s_returnRoundsA ecc. — tutte le leghe, i nomi squadra
+// sono unici) — se non trovano nulla (es. dati di una stagione passata,
+// vedi computePreseasonPrevisioni) restano pari, si ferma ai gol fatti.
+function headToHeadTiebreak(nameA, nameB) {
+  const roundSets = [
+    typeof s_roundsA !== 'undefined' && s_roundsA, typeof s_returnRoundsA !== 'undefined' && s_returnRoundsA,
+    typeof s_roundsB !== 'undefined' && s_roundsB, typeof s_returnRoundsB !== 'undefined' && s_returnRoundsB,
+    typeof s_roundsC !== 'undefined' && s_roundsC, typeof s_returnRoundsC !== 'undefined' && s_returnRoundsC,
+  ];
+  let ptsA = 0, ptsB = 0, gfA = 0, gfB = 0;
+  roundSets.forEach(rounds => {
+    if (!rounds) return;
+    rounds.forEach(round => {
+      round.forEach(m => {
+        if (!m.result) return;
+        let gA, gB;
+        if (m.team1.name === nameA && m.team2.name === nameB) { gA = m.result.team1Goals; gB = m.result.team2Goals; }
+        else if (m.team1.name === nameB && m.team2.name === nameA) { gA = m.result.team2Goals; gB = m.result.team1Goals; }
+        else return;
+        gfA += gA; gfB += gB;
+        if (gA > gB) ptsA += 3; else if (gB > gA) ptsB += 3; else { ptsA++; ptsB++; }
+      });
+    });
+  });
+  if (ptsA !== ptsB) return ptsB - ptsA;
+  if (gfA !== gfB) return gfB - gfA;
+  return 0;
+}
+
+// Comparator standard (ordine descending, come già usato ovunque nel gioco:
+// `(a,b) => b.x - a.x`) per righe con { name, points, goalsFor, goalsAgainst }.
+// `useHeadToHead=false` per contesti senza dati-partita affidabili (stagioni
+// passate) — si ferma ai gol fatti.
+function compareStandingsRows(a, b, useHeadToHead = true) {
+  if (b.points !== a.points) return b.points - a.points;
+  const gdA = (a.goalsFor || 0) - (a.goalsAgainst || 0);
+  const gdB = (b.goalsFor || 0) - (b.goalsAgainst || 0);
+  if (gdB !== gdA) return gdB - gdA;
+  const gfA = a.goalsFor || 0, gfB = b.goalsFor || 0;
+  if (gfB !== gfA) return gfB - gfA;
+  if (useHeadToHead && a.name && b.name) {
+    const h2h = headToHeadTiebreak(a.name, b.name);
+    if (h2h) return h2h;
+  }
+  return 0;
+}
+
 function updateStandings(standings, match, result, points) {
   // Inizializza le statistiche per le squadre se non esistono
   [match.team1, match.team2].forEach(team => {
@@ -2817,6 +2977,18 @@ function ensureLeagueSection(containerId) {
   section.appendChild(body);
   container.appendChild(section);
   return body;
+}
+
+// Tra una stagione e l'altra (previsioni pre-stagione/mercato estivo, vedi
+// displayPreSeasonStandings) tutte e 3 le sezioni Serie A/B/C devono essere
+// aperte, non solo quella del giocatore — è lo sfondo dell'intero mercato,
+// non la vista di gioco normale dove ha senso vedere di default solo la
+// propria lega.
+function openAllLeagueSections() {
+  ['serieA', 'serieB', 'serieC'].forEach(id => {
+    const section = document.getElementById('league-' + id);
+    if (section) section.open = true;
+  });
 }
 
 // ── CLASSIFICA MARCATORI / ASSIST ────────────────────────────────────────────
@@ -3482,23 +3654,19 @@ function displayStandings(containerId, standingsData, halfSeason = false) {
   const container = ensureLeagueSection(containerId);
   if (!container) return;
   // Rimuovi classifica precedente se esiste (evita duplicati tra andata e ritorno).
-  // Se l'utente aveva aperto/chiuso manualmente questa lega, ricorda lo stato
-  // invece di ripartire ogni volta dal default (lega del giocatore aperta,
-  // le altre due a scomparsa).
+  // Non più apribile/chiudibile: sempre visibile appena si apre la sezione
+  // Serie A/B/C esterna (ensureLeagueSection), niente doppio click.
   const existing = document.getElementById(`classifica-${containerId}`);
-  const wasOpen = existing ? existing.open : null;
   if (existing) existing.remove();
-  const standingsDiv = document.createElement('details');
-  standingsDiv.innerHTML = `<summary>Classifica${halfSeason ? ' <em style="font-size:.75em;opacity:.6">(dopo l\'andata)</em>' : ''}</summary>`;
+  const standingsDiv = document.createElement('div');
+  standingsDiv.innerHTML = `<h2>Classifica${halfSeason ? ' <em style="font-size:.75em;opacity:.6">(dopo l\'andata)</em>' : ''}</h2>`;
   standingsDiv.id = `classifica-${containerId}`;
-  const myLeague = LEAGUE_LEVEL_BY_CONTAINER[containerId];
-  standingsDiv.open = wasOpen !== null ? wasOpen : (!playerTeam || playerTeam.leagueLevel === myLeague);
 
   // Converti l'oggetto in un array di oggetti, includendo il nome della squadra
   const standingsArray = Object.entries(standingsData).map(([name, stats]) => ({ name, ...stats }));
 
-  // Ordina l'array in base ai punti
-  standingsArray.sort((a, b) => b.points - a.points);
+  // Ordina l'array: punti → differenza reti → gol fatti → scontri diretti
+  standingsArray.sort(compareStandingsRows);
 
   // Creazione della tabella
   const table = document.createElement('table');
@@ -3660,8 +3828,12 @@ function computePreseasonPrevisioni(teams, league, oldStandingsByLeague) {
       placementRank.set(team.name, (N + 1) / 2); // nessun dato storico: fallback neutro
       return;
     }
-    const sorted = Object.entries(oldStandings).sort((a, b) => b[1].points - a[1].points);
-    const oldRank = sorted.findIndex(([name]) => name === team.name) + 1;
+    // useHeadToHead=false: sono i risultati della stagione GIÀ conclusa, le
+    // rounds sono già state sovrascritte per quella nuova a questo punto.
+    const sorted = Object.entries(oldStandings)
+      .map(([name, stats]) => ({ name, ...stats }))
+      .sort((a, b) => compareStandingsRows(a, b, false));
+    const oldRank = sorted.findIndex(e => e.name === team.name) + 1;
     const oldNumTeams = sorted.length;
     if (oldLeague === league) {
       placementRank.set(team.name, oldRank);
@@ -3729,7 +3901,7 @@ function showPreseasonPrevisioniModal(previsioniByLeague, onDone) {
 function getWinner(standings) {
   return Object.entries(standings)
     .map(([name, stats]) => ({ name, ...stats }))
-    .sort((a, b) => b.points - a.points)[0];
+    .sort(compareStandingsRows)[0];
 }
 
 // Funzione per visualizzare l'Albo d'oro
@@ -5108,6 +5280,7 @@ function renderResumedState() {
     displayPreSeasonStandings('serieA', serieA);
     displayPreSeasonStandings('serieB', serieB);
     displayPreSeasonStandings('serieC', serieC);
+    openAllLeagueSections();
     return;
   }
 
@@ -5123,6 +5296,7 @@ function renderResumedState() {
     displayPreSeasonStandings('serieA', computePreseasonPrevisioni(serieA, 'A', oldStandingsByLeague), true);
     displayPreSeasonStandings('serieB', computePreseasonPrevisioni(serieB, 'B', oldStandingsByLeague), true);
     displayPreSeasonStandings('serieC', computePreseasonPrevisioni(serieC, 'C', oldStandingsByLeague), true);
+    openAllLeagueSections();
     if (s_coppaResult) displayCoppaItalia(s_coppaResult);
     return;
   }
@@ -5617,7 +5791,7 @@ function showJobMarketBrowserModal(onAccepted) {
 function collectSeasonEvalData() {
   const st = playerTeam.leagueLevel === 'A' ? standingsA
     : playerTeam.leagueLevel === 'B' ? standingsB : standingsC;
-  const sorted = Object.entries(st).map(([name, s]) => ({ name, ...s })).sort((a, b) => b.points - a.points);
+  const sorted = Object.entries(st).map(([name, s]) => ({ name, ...s })).sort(compareStandingsRows);
   const rank = sorted.findIndex(e => e.name === playerTeam.name) + 1;
   if (rank < 1) return null;
   const numTeams = sorted.length;
@@ -6121,11 +6295,12 @@ function runWinterAITransfers(onComplete = () => {}) {
     if (Math.random() > foreignWinterSkipChance) return;
     __recordMarketAttempt(team);
     const cand = generateForeignCandidate();
-    if (canAddRole(team, cand.role) && canTeamAcquirePlayer(team, cand) && team.budget >= cand.cost) {
+    if (canAddRole(team, cand.role) && canTeamAcquirePlayer(team, cand) && canRebalanceForDeal(team, cand.cost, cand.salary)) {
       const ev = evaluateTransferTarget(team, cand, cand.cost);
       if (ev && __marketStatsSink) __marketStatsSink.push({ team: team.name, gain: ev.gain, cost: ev.cost, score: ev.score });
       if (ev && ev.gain > 0) {
         const player = materializeForeignCandidate(cand, team);
+        commitRebalanceForDeal(team, cand.cost, cand.salary);
         team.roster.push(player);
         team.budget -= cand.cost;
         recalculateTeamStrength(team);
@@ -6169,23 +6344,6 @@ function durationSelectHtml(dataAttr, id, selectedYears) {
   return `<select ${dataAttr}="${id}" style="padding:3px 6px;border-radius:4px;border:1px solid var(--border-card);font-size:.78rem">${opts}</select>`;
 }
 
-// Tetto massimo di anni totali di contratto raggiungibile con un rinnovo
-// anticipato dalla tab Rosa (si somma alla durata residua, non la sostituisce).
-const ROSA_RENEW_MAX_TOTAL_YEARS = 6;
-// Selettore per il rinnovo anticipato dalla tab Rosa: qui gli anni scelti si
-// SOMMANO alla durata residua del contratto (non la sostituiscono, altrimenti
-// un contratto in scadenza tra 4 anni rinnovato di "1" finirebbe accorciato a
-// 1 anno, che non ha senso) — le opzioni mostrate sono quindi limitate a non
-// far mai superare ROSA_RENEW_MAX_TOTAL_YEARS anni totali.
-function rosaRenewDurationSelectHtml(id, currentDuration) {
-  const base = Math.max(0, currentDuration || 0);
-  const maxAdd = ROSA_RENEW_MAX_TOTAL_YEARS - base;
-  if (maxAdd < 1) return '<span style="font-size:.78rem;color:#666">Già al massimo (6 anni)</span>';
-  const sel = Math.min(3, maxAdd);
-  const opts = Array.from({ length: maxAdd }, (_, i) => i + 1)
-    .map(y => `<option value="${y}"${y === sel ? ' selected' : ''}>+${y}a</option>`).join('');
-  return `<select data-rosa-renew-dur="${id}" style="padding:3px 6px;border-radius:4px;border:1px solid var(--border-card);font-size:.78rem">${opts}</select>`;
-}
 
 // Select "Posizione", dipendente dal ruolo selezionato: le opzioni sono le
 // 2 posizioni di QUEL ruolo (ROLE_POSITIONS) — disabilitato/vuoto se non è
@@ -6334,11 +6492,15 @@ function finishAndata() {
   // Il mercato a turni CPU-vs-CPU (Fase 11 estiva, ora estesa all'invernale)
   // è asincrono: tutto quello che nel vecchio codice veniva subito dopo
   // runWinterAITransfers() ora vive nella callback, invocata solo a
-  // schedulazione conclusa. Promemoria rinnovi (non bloccante) PRIMA che
+  // schedulazione conclusa. Risoluzione BLOCCANTE dei rinnovi PRIMA che
   // partano i turni: una volta iniziato lo scheduler, un giocatore in ultimo
   // anno di contratto può ricevere un precontratto da chiunque in qualsiasi
   // momento, anche al primissimo giro.
-  showWinterRenewalReminderModal(() => {
+  // Esclude chi si ritirerà comunque a fine stagione (stessa soglia usata
+  // ovunque nel gioco, age>=36, vedi Rosa tab/willRetire): inutile chiedere
+  // di rinnovare un contratto che il giocatore non arriverà mai a onorare.
+  const winterEligible = playerTeam ? playerTeam.roster.filter(p => p.contract?.duration === 1 && p.age < 36 && !isPreContracted(p)) : [];
+  openRenewalGate(winterEligible, true, () => {
   runWinterAITransfers(() => {
     // Le squadre CPU sistemano subito eventuali carenze di ruolo al termine del
     // mercato invernale (giocatori primavera se non trovano uno svincolato adatto)
@@ -6376,7 +6538,7 @@ function finishAndata() {
       saveGame();
     }
   });
-  }); // fine callback showWinterRenewalReminderModal
+  }); // fine callback openRenewalGate (inverno)
 }
 
 function finishSeason() {
@@ -6664,6 +6826,7 @@ document.getElementById('simulaStagione').addEventListener('click', function () 
     displayPreSeasonStandings('serieA', previsioni.A, true);
     displayPreSeasonStandings('serieB', previsioni.B, true);
     displayPreSeasonStandings('serieC', previsioni.C, true);
+    openAllLeagueSections();
 
     // Il presidente deve fissare budget/monte ingaggi del player PRIMA che
     // parta il mercato a turni (sotto), non più dopo: da quando il player
@@ -6818,8 +6981,8 @@ function archiveStaffSeasonHistory() {
   const leagueStandings = { A: standingsA, B: standingsB, C: standingsC };
   const rankOf = (standings, teamName) => {
     if (!standings) return null;
-    const sorted = Object.entries(standings).sort((a, b) => b[1].points - a[1].points);
-    const idx = sorted.findIndex(([name]) => name === teamName);
+    const sorted = Object.entries(standings).map(([name, stats]) => ({ name, ...stats })).sort(compareStandingsRows);
+    const idx = sorted.findIndex(e => e.name === teamName);
     return idx >= 0 ? idx + 1 : null;
   };
   [...serieA, ...serieB, ...serieC].forEach(team => {
@@ -6865,7 +7028,7 @@ function handlePromotionsAndRelegations(standingsA, standingsB, standingsC, curr
   // Helper per ordinare la classifica e restituire un array
   const sortStandings = (standings) => Object.entries(standings)
     .map(([name, stats]) => ({ name, ...stats }))
-    .sort((a, b) => b.points - a.points);
+    .sort(compareStandingsRows);
 
   const sortedA = sortStandings(standingsA);
   const sortedB = sortStandings(standingsB);
@@ -6999,138 +7162,17 @@ function buildVoluntaryTransferListing(allTeams) {
   return transferMarket;
 }
 
-// §1a REGOLE_CALCIOMERCATO: risoluzione bloccante dei contratti dell'umano in
-// scadenza quest'estate, PRIMA che inizi il giro 1 del mercato a turni — non
-// più decidibile "con calma" durante i turni (tab Rinnovi, vedi pendingRenewals
-// altrove). Il rinnovo è un'offerta a pacchetto generata dal gioco (stipendio
-// e durata automatici): l'umano decide solo accetta/rifiuta, nessuna leva.
-function showMandatoryRenewalsModal(onDone) {
-  if (!playerTeam || !pendingRenewals.length) { onDone(); return; }
-  const decisions = new Map(); // playerId -> 'renewed' | 'released'
-  const overlay = document.createElement('div');
-  overlay.className = 'mm-overlay';
-
-  const render = () => {
-    const rows = pendingRenewals.map(player => {
-      const d = decisions.get(player.id);
-      const demanded = getRenewalSalary(player);
-      const [minDur, maxDur] = getContractDurationRange(player.strength, player.age);
-      if (d === 'renewed') return `<div class="mm-row mm-done">${icon('check')} <strong>${player.firstName} ${player.lastName}</strong> rinnovato — ${formatMoneyK(annualSalary(demanded))}€/anno</div>`;
-      if (d === 'released') return `<div class="mm-row mm-done">🔚 <strong>${player.firstName} ${player.lastName}</strong> svincolato</div>`;
-      const overCap = !wageCapAllows(playerTeam, demanded, player.contract?.salary || 0);
-      return `<div class="mm-row">
-        <div class="mm-pinfo">${formatNationality(player)}<span class="mm-name">${player.firstName} ${player.lastName}</span>${formatRoleBadges(player)}<span>${player.age}a</span><span>⚡${player.strength}</span><span class="mm-salary-tag">${icon('briefcase')} ${formatMoneyK(annualSalary(demanded))}€/anno · ${minDur}-${maxDur} anni</span></div>
-        <div class="mm-acts">
-          <button class="mm-btn mm-green" data-mr-action="renew" data-pid="${player.id}" ${overCap ? 'disabled title="Supera il monte ingaggi"' : ''}>Rinnova</button>
-          <button class="mm-btn mm-red" data-mr-action="release" data-pid="${player.id}">Lascia partire</button>
-        </div></div>`;
-    }).join('');
-    const remaining = pendingRenewals.filter(p => !decisions.has(p.id)).length;
-    overlay.innerHTML = `
-      <div class="mm-box">
-        <div class="mm-header"><span class="mm-title">📋 Contratti in scadenza — ${playerTeam.name}</span></div>
-        <div class="mm-content">
-          <p class="mm-hint" style="padding:0 0 10px">Prima di aprire il mercato, decidi il futuro dei giocatori in scadenza: offerta di rinnovo a pacchetto (stipendio e durata già decisi dal club) oppure svincolo.</p>
-          ${rows}
-        </div>
-        <div class="mm-footer">
-          <span class="mm-footer-note">${remaining > 0 ? `${icon('warning')} ${remaining} decisione/i mancante/i` : `${icon('check')} Tutto deciso`}</span>
-          <button class="mm-btn mm-confirm" id="mr-confirm" ${remaining > 0 ? 'disabled' : ''}>Apri il mercato →</button>
-        </div>
-      </div>`;
-    overlay.querySelectorAll('[data-mr-action]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const id = +btn.dataset.pid;
-        const player = pendingRenewals.find(p => p.id === id);
-        if (!player) return;
-        if (btn.dataset.mrAction === 'renew') {
-          const salary = getRenewalSalary(player);
-          if (!wageCapAllows(playerTeam, salary, player.contract?.salary || 0)) return;
-          const [minDur, maxDur] = getContractDurationRange(player.strength, player.age);
-          const duration = minDur + Math.floor(Math.random() * (maxDur - minDur + 1));
-          if (!player.contract) player.contract = createContract(player.strength, player.age);
-          player.contract.salary = salary;
-          player.contract.duration = duration;
-          transferLog.push(`${icon('clipboard')} <em>${player.firstName} ${player.lastName}</em> rinnova con <strong>${playerTeam.name}</strong> — ${duration} anni, ${formatMoneyK(annualSalary(salary))}€/anno`);
-          decisions.set(id, 'renewed');
-        } else {
-          playerTeam.roster = playerTeam.roster.filter(p => p !== player);
-          recordTransfer(player, null, null);
-          freeAgents.push(player);
-          transferLog.push(`🔚 <em>${player.firstName} ${player.lastName}</em> lascia <strong>${playerTeam.name}</strong> a <strong>parametro zero</strong> (${player.age} anni, Forza: ${player.strength})`);
-          decisions.set(id, 'released');
-        }
-        render();
-      });
-    });
-    const confirmBtn = overlay.querySelector('#mr-confirm');
-    if (confirmBtn && !confirmBtn.disabled) {
-      confirmBtn.addEventListener('click', () => {
-        overlay.remove();
-        pendingRenewals = [];
-        recalculateTeamStrength(playerTeam);
-        onDone();
-      });
-    }
-  };
-  render();
-  document.body.appendChild(overlay);
-}
-
-// §1a-bis REGOLE_CALCIOMERCATO: promemoria NON bloccante prima che inizi il
-// mercato invernale — a differenza dell'estate (rinnovi bloccanti, vedi
-// showMandatoryRenewalsModal), l'inverno non ha una fase obbligatoria: un
-// giocatore in ultimo anno di contratto (duration===1) può firmare un
-// precontratto con QUALUNQUE CPU senza bisogno del tuo consenso (solo il
-// suo) — l'unica difesa è rinnovarlo PRIMA. Questo avviso ti dà la
-// possibilità di farlo con un click prima che partano i turni, ma puoi
-// sempre chiudere e rimandare (i giocatori restano rinnovabili anche dopo,
-// dalla tab Rosa, finché nessuno firma un precontratto con loro).
-function showWinterRenewalReminderModal(onDone) {
-  const eligible = playerTeam ? playerTeam.roster.filter(p => p.contract?.duration === 1 && !isPreContracted(p)) : [];
-  if (!eligible.length) { onDone(); return; }
-  const overlay = document.createElement('div');
-  overlay.className = 'mm-overlay';
-  const renewed = new Set();
-
-  const render = () => {
-    const rows = eligible.map(player => {
-      if (renewed.has(player.id)) return `<div class="mm-row mm-done">${icon('check')} <strong>${player.firstName} ${player.lastName}</strong> rinnovato</div>`;
-      const demanded = getRenewalSalary(player);
-      const overCap = !wageCapAllows(playerTeam, demanded, player.contract?.salary || 0);
-      return `<div class="mm-row">
-        <div class="mm-pinfo">${formatNationality(player)}<span class="mm-name">${player.firstName} ${player.lastName}</span>${formatRoleBadges(player)}<span>${player.age}a</span><span>⚡${player.strength}</span><span class="mm-salary-tag">${icon('briefcase')} ${formatMoneyK(annualSalary(demanded))}€/anno</span></div>
-        <div class="mm-acts">
-          <button class="mm-btn mm-green" data-action="wr-renew" data-pid="${player.id}" ${overCap ? 'disabled title="Supera il monte ingaggi"' : ''}>Rinnova (+2 anni)</button>
-        </div></div>`;
-    }).join('');
-    overlay.innerHTML = `
-      <div class="mm-box">
-        <div class="mm-header"><span class="mm-title">${icon('warning')} Contratti in scadenza a fine stagione — ${playerTeam.name}</span></div>
-        <div class="mm-content">
-          <p class="mm-hint" style="padding:0 0 10px">Questi giocatori sono in ultimo anno di contratto: da oggi, durante il mercato invernale, qualunque squadra può proporgli un precontratto senza bisogno del tuo consenso — solo il loro. Rinnovali ora per blindarli, oppure continua e occupatene più tardi dalla tab Rosa (finché nessuno firma con loro, puoi sempre rinnovarli).</p>
-          ${rows}
-        </div>
-        <div class="mm-footer">
-          <button class="mm-btn mm-confirm" id="wr-continue">Vai al mercato invernale →</button>
-        </div>
-      </div>`;
-    overlay.querySelectorAll('[data-action="wr-renew"]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const id = +btn.dataset.pid;
-        const player = eligible.find(p => p.id === id);
-        if (!player || !executeAnytimeRenew(player, 2)) return;
-        renewed.add(id);
-        render();
-      });
-    });
-    overlay.querySelector('#wr-continue').addEventListener('click', () => {
-      overlay.remove();
-      onDone();
-    });
-  };
-  render();
-  document.body.appendChild(overlay);
+// §1a/§1a-bis REGOLE_CALCIOMERCATO: risoluzione BLOCCANTE dei contratti in
+// scadenza, PRIMA che inizi il giro 1 del mercato a turni — sia in estate
+// (giocatori già a fine contratto: rinnova o svincola) sia in inverno
+// (giocatori in ultimo anno: rinnova ora o accetta il rischio che una CPU
+// gli proponga un precontratto senza bisogno del tuo consenso, solo il suo).
+// Apre la STESSA finestra "Sessione di Mercato" vera (showManagerMarketModal,
+// modalità renewalGate) invece di un popup a parte — solo la tab Rinnovi,
+// tutto il resto bloccato finché ogni giocatore non ha una decisione.
+function openRenewalGate(players, winter, onDone) {
+  if (!playerTeam || !players.length) { onDone(); return; }
+  showManagerMarketModal(null, null, { players, winter, onGateDone: onDone });
 }
 
 function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newSerieB, newSerieC, onComplete) {
@@ -7165,8 +7207,8 @@ function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newS
 
   // --- STEP 0: ESONERI ALLENATORI ---
   const checkDismissals = (standings) => {
-    const sorted = Object.entries(standings).sort((a, b) => b[1].points - a[1].points);
-    sorted.forEach(([teamName], actualRankIdx) => {
+    const sorted = Object.entries(standings).map(([name, stats]) => ({ name, ...stats })).sort(compareStandingsRows);
+    sorted.forEach(({ name: teamName }, actualRankIdx) => {
       const team = teamMap.get(teamName);
       if (!team || !team.coach || !team.objective) return;
       if (playerTeam && team === playerTeam) return; // il giocatore gestisce l'allenatore dalla tab Panchina
@@ -7198,8 +7240,8 @@ function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newS
 
   // --- STEP 0b: VALUTAZIONE DS (esonero se sottoperforma, poaching se overperforma) ---
   const checkDSPerformance = (standings) => {
-    Object.entries(standings).sort((a, b) => b[1].points - a[1].points)
-      .forEach(([teamName], actualRankIdx) => {
+    Object.entries(standings).map(([name, stats]) => ({ name, ...stats })).sort(compareStandingsRows)
+      .forEach(({ name: teamName }, actualRankIdx) => {
         const team = teamMap.get(teamName);
         if (!team || !team.ds || team.ds.isHuman || !team.objective) return;
         const actualRank = actualRankIdx + 1;
@@ -7608,7 +7650,7 @@ function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newS
   const applyFinances = (standings, leagueName) => {
     Object.entries(standings)
       .map(([name, stats]) => ({ name, ...stats }))
-      .sort((a, b) => b.points - a.points)
+      .sort(compareStandingsRows)
       .forEach((teamStats, index) => {
         const team = teamMap.get(teamStats.name);
         if (!team) return;
@@ -7714,7 +7756,7 @@ function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newS
   // §1a: i contratti dell'umano in scadenza quest'estate (pendingRenewals,
   // popolati sopra in STEP 1d) vanno risolti PRIMA che parta il giro 1, come
   // fase bloccante — non più "con calma" durante i turni.
-  showMandatoryRenewalsModal(() => {
+  openRenewalGate(pendingRenewals, false, () => {
   runTurnBasedMarket(() => {
 
   // 6b-bis: mercato estero, INDIPENDENTE dal mercato a turni sopra (non richiede
@@ -7731,11 +7773,12 @@ function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newS
     if (Math.random() > foreignSkipChance) return; // partecipazione modulata da ambizione/generosità presidente
     __recordMarketAttempt(team);
     const cand = generateForeignCandidate();
-    if (canAddRole(team, cand.role) && canTeamAcquirePlayer(team, cand) && team.budget >= cand.cost) {
+    if (canAddRole(team, cand.role) && canTeamAcquirePlayer(team, cand) && canRebalanceForDeal(team, cand.cost, cand.salary)) {
       const ev = evaluateTransferTarget(team, cand, cand.cost);
       if (ev && __marketStatsSink) __marketStatsSink.push({ team: team.name, gain: ev.gain, cost: ev.cost, score: ev.score });
       if (ev && ev.gain > 0) {
         const player = materializeForeignCandidate(cand, team);
+        commitRebalanceForDeal(team, cand.cost, cand.salary);
         team.roster.push(player);
         team.budget -= cand.cost;
         recalculateTeamStrength(team);
@@ -7795,8 +7838,12 @@ function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newS
           if (!canAddRole(buyingTeam, player.role)) return;
           if (!canTeamAcquirePlayer(buyingTeam, player)) return;
           if (player.strength <= targetFloor) return;
+          // Stesso motivo dell'Opzione 1 del mercato a turni: pagare un
+          // giocatore all'ultimo anno di contratto è un pessimo affare, tra
+          // poco è ottenibile gratis via precontratto da chiunque.
+          if ((player.contract?.duration ?? 99) <= 1) return;
           const bid = getTransferValue(player) * 1.5;
-          if (buyingTeam.budget < bid) return;
+          if (!canRebalanceForDeal(buyingTeam, bid, player.contract?.salary ?? getDisplaySalary(player.strength))) return;
           if (!bestTarget || player.strength > bestTarget.strength) {
             bestTarget = player; bestSeller = sellingTeam;
           }
@@ -7821,7 +7868,9 @@ function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newS
       const prestigeBonus = Math.min(0.18, prestigeDiff * 0.025);
       const sellerDsProtect = bestSeller.ds ? Math.max(0, (bestSeller.ds.strength - 50) / 250) : 0;
       if (Math.random() >= (baseAccept + prestigeBonus - sellerDsProtect)) continue;
-      if (buyingTeam.budget < finalBid) continue;
+      const bestTargetSalary = bestTarget.contract?.salary ?? getDisplaySalary(bestTarget.strength);
+      if (!canRebalanceForDeal(buyingTeam, finalBid, bestTargetSalary)) continue;
+      commitRebalanceForDeal(buyingTeam, finalBid, bestTargetSalary);
 
       bestSeller.roster = bestSeller.roster.filter(p => p !== bestTarget);
       buyingTeam.roster.push(bestTarget);
@@ -7878,7 +7927,7 @@ function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newS
 
   onComplete();
   }); // fine callback runTurnBasedMarket
-  }); // fine callback showMandatoryRenewalsModal
+  }); // fine callback openRenewalGate
 }
 
 // ── PROTOTIPO SPERIMENTALE — MERCATO A TURNI (Fase 7 del piano) ─────────────
@@ -8201,8 +8250,11 @@ function getMarketTurnOptions(team, ctx) {
   // vivaio (ciclo naturale già gestito altrove) — non vale la pena spendere
   // un'azione per smuoverlo. Per ogni candidato si prova in ordine: VENDITA
   // (fa cassa) → PRESTITO (libera un posto senza perderlo del tutto) →
-  // SVINCOLO, e solo se il contratto è ormai in scadenza (altrimenti si
-  // regalerebbe valore contrattuale ancora utile per niente).
+  // SVINCOLO, solo se il contratto è ormai in scadenza. Questo pool (releasable/
+  // offSystem) contiene SOLO chi è già fuori dai migliori 22 di ENTRAMBI i
+  // moduli dell'allenatore (getSquadTiers/getSquadSurplus, unione dei due
+  // moduli) — un giocatore che gioca in almeno uno dei due non ci finisce mai,
+  // quindi non rischia più lo svincolo per un semplice cambio di modulo attivo.
   let disposalTop = null;
   if (oversized || oldSurplus.length || offSystem.length) {
     const rest = releasable.filter(p => p.age <= 34 && !offSystem.includes(p)).sort((a, b) => a.strength - b.strength);
@@ -8245,8 +8297,19 @@ function getMarketTurnOptions(team, ctx) {
         // senso ha prendere un rincalzo debole e anziano?) né per stranieri
         // (slot scarso, tetto di 3 — va speso solo su un titolare vero).
         if (!wouldEnterBest11(team, player) && (player.age >= 24 || player.nationality !== 'IT')) return;
+        // Niente acquisti A PAGAMENTO di un giocatore all'ultimo anno di
+        // contratto (o già scaduto): tra pochi mesi diventa ottenibile gratis
+        // da chiunque via precontratto (§1a-bis), quindi pagarlo ora è un
+        // pessimo affare — e siccome nessun altro lo comprerebbe più,
+        // rischia di restare invenduto e finire svincolato la sessione dopo,
+        // sprecando i soldi appena spesi (osservato in partita).
+        if ((player.contract?.duration ?? 99) <= 1) return;
         const cost = Math.max(0.5, Math.round(getTransferValue(player) * (0.9 + Math.random() * 0.3) * 10) / 10);
-        if (team.budget < cost) return;
+        // Budget trasferimenti e monte ingaggi sono lo stesso pool ripartibile
+        // che il DS umano gestisce col cursore (buildBudgetSliderHtml): se un
+        // solo tetto blocca l'affare ma l'altro ha margine, la CPU può
+        // spostare l'eccedenza invece di scartare subito il candidato.
+        if (!canRebalanceForDeal(team, cost, player.contract?.salary ?? getDisplaySalary(player.strength))) return;
         // Consenso del giocatore: la squadra vuole comprarlo, ma vuole VENIRE
         // lui? Un 95 di forza non accetta facilmente una squadra di A che
         // lotta per la Salvezza (vedi estimatePlayerJoinChance).
@@ -8261,7 +8324,7 @@ function getMarketTurnOptions(team, ctx) {
     const faOptions = freeAgents
       .map(p => ({ player: p, cost: 0 }))
       .filter(({ player: p }) => canAddRole(team, p.role) && canTeamAcquirePlayer(team, p)
-        && wageCapAllows(team, p.contract?.salary ?? getDisplaySalary(p.strength))
+        && canRebalanceForDeal(team, 0, p.contract?.salary ?? getDisplaySalary(p.strength))
         // Stesso filtro di buonsenso dell'opzione 1: niente svincolati anziani
         // e deboli solo per riempire la panchina, niente stranieri se non da
         // titolari.
@@ -8325,7 +8388,8 @@ function executeDisposalOption(team, opt, ctx) {
     turnMarketLog(dest, `RICEVE IN PRESTITO ${candidate.firstName} ${candidate.lastName} da ${team.name}`);
     return { buyer: dest, seller: team };
   }
-  // release (svincolo, solo contratto in scadenza)
+  // release (svincolo, solo contratto in scadenza, e solo se già fuori dai
+  // migliori 22 di entrambi i moduli — vedi commento sopra su disposalPool)
   team.roster = team.roster.filter(p => p !== candidate);
   ctx.lockedPlayers.delete(candidate);
   freeAgents.push(candidate);
@@ -8338,6 +8402,7 @@ function executeDisposalOption(team, opt, ctx) {
 
 function executeBuyOption(team, opt, ctx) {
   const { player, cost, seller } = opt;
+  commitRebalanceForDeal(team, cost, player.contract?.salary ?? getDisplaySalary(player.strength));
   seller.roster = seller.roster.filter(p => p !== player);
   team.roster.push(player);
   team.budget -= cost;
@@ -8354,6 +8419,7 @@ function executeBuyOption(team, opt, ctx) {
 
 function executeFaOption(team, opt, ctx) {
   const { player } = opt;
+  commitRebalanceForDeal(team, 0, player.contract?.salary ?? getDisplaySalary(player.strength));
   const idx = freeAgents.indexOf(player);
   const fa = idx >= 0 ? freeAgents.splice(idx, 1)[0] : player;
   team.roster.push(fa);
@@ -8563,21 +8629,15 @@ function runTurnBasedMarket(onComplete = () => {}, maxRounds = 40) {
       return;
     }
     if (team === playerTeam && !TURN_MARKET_AUTO_PLAY_HUMAN && !ctx.playerOptedOut) {
-      // Turno reale del player: si ferma qui, la SUA UI di mercato (quella
-      // di sempre, non una finestra separata) decide, poi si riprende. Se
-      // non ha bisogni reali quel turno, passa in automatico senza aprirla —
-      // TRANNE se manca l'allenatore, il budget è negativo o la rosa è sotto
-      // il minimo: senza la sessione libera finale (§3, eliminata) questo
-      // turno è l'unica occasione garantita di risolvere questi blocchi, non
-      // si può saltare in automatico (altrimenti il player resta bloccato
-      // con budget negativo per il resto della sessione, senza mai poter
-      // aprire la finestra per sistemarlo).
-      const needsAttention = !playerTeam.coach || playerTeam.budget < 0 || getEffectiveRosterCount(playerTeam) < PLAYER_ROSTER_MIN_TO_PROCEED;
-      if (getMarketTurnOptions(team, ctx).noNeedAtAll && !needsAttention) {
-        turnMarketLog(team, 'nessun bisogno reale (né comprare né vendere) → turno saltato in automatico');
-        setTimeout(processNext, TICK_DELAY_MS);
-        return;
-      }
+      // Turno reale del player: si ferma sempre qui, ogni giro, e si riapre
+      // la SUA UI di mercato (quella di sempre, non una finestra separata) —
+      // decide lui se c'è qualcosa da fare o se non c'è nulla (bottone
+      // "Continua mercato"), mai lo scheduler al posto suo. Nessun auto-skip:
+      // in precedenza un "nessun bisogno reale" veniva deciso in automatico e,
+      // senza la sessione libera finale (§3, eliminata), poteva restare
+      // permanente per il resto della sessione — il player restava a guardare
+      // il ticker CPU senza che il suo turno tornasse mai più, senza modo di
+      // riaprire la finestra per agire o anche solo chiudere esplicitamente.
       hideMarketProgressBar(); // la sua UI vera basta a dire che sta succedendo qualcosa
       showManagerMarketModal(
         () => { // "Conferma e Chiudi Mercato": il player chiude davvero, non viene più interpellato
@@ -8835,16 +8895,24 @@ function newsRoundupRowHtml(n, currentLeague) {
 }
 
 // `items` è già più recenti-prima (buildNewsFeed): le notizie invernali
-// (isWinter), se presenti, sono quindi sempre in blocco in cima — inserisce
-// un separatore prima della prima di esse, per distinguerle a colpo d'occhio
-// da quelle (più vecchie) del mercato estivo che seguono sotto.
+// (isWinter), se presenti, sono quindi sempre in blocco in cima, seguite da
+// quelle (più vecchie) del mercato estivo della stessa stagione — inserisce
+// un separatore prima di ciascun blocco, così è sempre chiaro da dove in poi
+// si legge solo mercato invernale e da dove in poi solo mercato estivo
+// (se non c'è stato ancora un inverno questa stagione, compare solo il
+// separatore estivo, in cima).
 function newsRoundupHtml(items, currentLeague) {
   let html = '';
-  let dividerShown = false;
+  let winterDividerShown = false;
+  let summerDividerShown = false;
   items.forEach(n => {
-    if (n.isWinter && !dividerShown) {
+    if (n.isWinter && !winterDividerShown) {
       html += `<div class="news-season-divider">❄️ Calciomercato Invernale</div>`;
-      dividerShown = true;
+      winterDividerShown = true;
+    }
+    if (!n.isWinter && !summerDividerShown) {
+      html += `<div class="news-season-divider">☀️ Calciomercato Estivo</div>`;
+      summerDividerShown = true;
     }
     html += newsRoundupRowHtml(n, currentLeague);
   });
@@ -9212,21 +9280,30 @@ function executeEarlyRelease(player) {
   return true;
 }
 
-// Rinnovo "a piacimento" (non solo per contratti in scadenza): aggiorna lo
-// stipendio al valore di mercato attuale in base alla forza e SOMMA gli anni
-// scelti alla durata residua del contratto (non la sostituisce — un contratto
-// in scadenza tra 4 anni rinnovato di "1" deve arrivare a 5, non tornare a 1),
-// col tetto ROSA_RENEW_MAX_TOTAL_YEARS già garantito a monte dalle opzioni
-// mostrate in rosaRenewDurationSelectHtml.
-function executeAnytimeRenew(player, years) {
+// Rinnovo "a piacimento" (non solo per contratti in scadenza): stessa
+// formula unificata (computeRenewalOutcome) di CPU e gate — non più una
+// proposta sempre accettata con anni a scelta del DS: il giocatore può
+// rifiutare, e se accetta la durata (che SOSTITUISCE quella residua, non la
+// somma) è quella concordata col procuratore in base a personalità/
+// prestigio/adeguatezza alla squadra, con il pavimento/tetto di
+// getContractDurationRange per forza ed età.
+// Ritorna { success: true } se firmato, { success: false, refused, reason }
+// altrimenti (refused=true se il motivo è il giocatore, false se è il monte
+// ingaggi del club a bloccare l'offerta ancora prima di proporla).
+function executeAnytimeRenew(player) {
   const newSalary = getRenewalSalary(player);
-  if (!wageCapAllows(playerTeam, newSalary, player.contract?.salary || 0)) return false;
-  const baseDuration = player.contract?.duration || 0;
+  if (!wageCapAllows(playerTeam, newSalary, player.contract?.salary || 0)) return { success: false, refused: false };
+  const outcome = computeRenewalOutcome(player, playerTeam);
+  if (outcome === 0) {
+    const reason = getRenewalRefusalReason(player);
+    transferLog.push(`${icon('clipboard')} <em>${player.firstName} ${player.lastName}</em> rifiuta il rinnovo con <strong>${playerTeam.name}</strong> (${reason})`);
+    return { success: false, refused: true, reason };
+  }
   if (!player.contract) player.contract = createContract(player.strength, player.age);
   player.contract.salary = newSalary;
-  player.contract.duration = Math.min(ROSA_RENEW_MAX_TOTAL_YEARS, baseDuration + years);
-  transferLog.push(`${icon('clipboard')} <em>${player.firstName} ${player.lastName}</em> rinnova con <strong>${playerTeam.name}</strong> — ora in scadenza tra ${player.contract.duration} anni (+${years}), ${formatMoneyK(annualSalary(newSalary))}€/anno`);
-  return true;
+  player.contract.duration = outcome;
+  transferLog.push(`${icon('clipboard')} <em>${player.firstName} ${player.lastName}</em> rinnova con <strong>${playerTeam.name}</strong> — ${outcome} anni, ${formatMoneyK(annualSalary(newSalary))}€/anno`);
+  return { success: true };
 }
 
 // Finestra dedicata per scegliere fra le proposte (acquisto o prestito) di un
@@ -9331,7 +9408,16 @@ function getFormationFitLabel(team, formationName) {
   return { text: `${icon('cross')} Fit scarso`, color: '#ef4444' };
 }
 
-function showManagerMarketModal(onConfirm, turnCtx = null) {
+// `renewalGate` (opzionale): { players, winter, onGateDone } — modalità
+// "solo Rinnovi", bloccante, usata PRIMA che parta lo scheduler a turni (sia
+// estivo sia invernale): riusa questa stessa finestra reale invece di un
+// popup a parte, ma con tutte le altre tab nascoste e il footer sostituito
+// da un unico pulsante "Vai al mercato →", disabilitato finché ogni
+// giocatore in `players` non ha una decisione (renewalDecisions). `winter`
+// distingue il secondo pulsante per riga: "Svincola" (estate, contratto già
+// scaduto) vs "Non rinnovare ora" (inverno, ancora sotto contratto — pura
+// presa d'atto, nessuna azione di gioco).
+function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
   // pendingAIOffers NON viene più generata qui: le offerte per i giocatori
   // del player nascono ora dal mercato a turni vero e proprio (vedi
   // tryOfferForPlayerSurplus) — una CPU con un bisogno reale che vorrebbe un
@@ -9386,11 +9472,15 @@ function showManagerMarketModal(onConfirm, turnCtx = null) {
   };
   const filter = { role: '', position: '', ageMin: 16, ageMax: 40, strMin: 0, strMax: 100, priceMin: 0, priceMax: 250, availability: 'all' };
   const loanFilter = { role: '', position: '', ageMin: 16, ageMax: 40, strMin: 0, strMax: 100 };
+  // Stessi filtri di Acquisti/Prestiti (ruolo/posizione/età/forza — niente
+  // prezzo, i pre-contratti sono sempre a parametro zero), stato separato
+  // così non si mescola con quello delle altre tab.
+  const preContractFilter = { role: '', position: '', ageMin: 16, ageMax: 40, strMin: 0, strMax: 100 };
   let coachCandidates = []; // ricostruito a ogni render della tab Panchina: idx → coach da freeCoaches
   let coachBuyCandidates = []; // ricostruito a ogni render della tab Panchina: idx → { coach, fromTeam } acquistabili a pagamento
   let loanCandidates = []; // ricostruito a ogni render della tab Prestiti: idx → { player, fromTeam }
   let preContractCandidates = []; // ricostruito a ogni render della tab Precontratti: idx → { player, fromTeam }
-  let activeTab = !playerTeam.coach ? 'panchina' : pendingRenewals.length > 0 ? 'rinnovi' : 'rosa';
+  let activeTab = renewalGate ? 'rinnovi' : (!playerTeam.coach ? 'panchina' : pendingRenewals.length > 0 ? 'rinnovi' : 'rosa');
   let coachAvail = 'all'; // vista tab Panchina: 'all' | 'free' | 'market'
   let moduliView = 'modulo'; // vista tab Moduli: 'modulo' | 'best11'
   let moduliFormation = null; // modulo selezionato nella tab Moduli (lazy: parte dall'attivo)
@@ -9401,6 +9491,7 @@ function showManagerMarketModal(onConfirm, turnCtx = null) {
   const rosaSellOffers = new Map(); // player.id → offerte[] generate on-demand
   const rosaLoanOffers = new Map(); // player.id → offerte[] generate on-demand
   const rosaRowPanel = new Map();   // player.id → 'renew' | 'sell' | 'loan' (pannello aperto)
+  const rosaRenewRefusals = new Map(); // player.id → motivo dell'ultimo rifiuto al rinnovo "a piacimento"
 
   // Libera lo slot allenatore prima di ingaggiarne uno nuovo dal mercato: se
   // quello attuale è ancora sotto contratto va esonerato (buonuscita), se il
@@ -9427,24 +9518,38 @@ function showManagerMarketModal(onConfirm, turnCtx = null) {
   overlay.className = 'mm-overlay';
 
   const buildRennoviTab = () => {
-    if (!pendingRenewals.length) return '<p class="mm-empty">Nessun contratto in scadenza.</p>';
-    return pendingRenewals.map(player => {
+    const gateWinter = renewalGate && renewalGate.winter;
+    const list = renewalGate ? renewalGate.players : pendingRenewals;
+    if (!list.length) return '<p class="mm-empty">Nessun contratto in scadenza.</p>';
+    const disclaimer = `<p class="mm-hint" style="padding:0 0 10px;font-weight:600">✍️ Stipendio e durata del contratto concordati col procuratore — puoi solo proporre il rinnovo, l'esito dipende dal giocatore.</p>`;
+    const gateHint = gateWinter
+      ? `<p class="mm-hint" style="padding:0 0 10px">Questi giocatori sono in ultimo anno di contratto: da oggi, durante il mercato invernale, qualunque squadra può proporgli un precontratto senza bisogno del tuo consenso — solo il loro. Decidi ora per ciascuno prima di procedere.</p>`
+      : '';
+    return gateHint + disclaimer + list.map(player => {
       const d = renewalDecisions.get(player.id);
       const demanded = getRenewalSalary(player);
       const current = player.contract?.salary || getDisplaySalary(player.strength);
-      const interestedTeam = renewalInterest.get(player.id);
+      const interestedTeam = renewalGate ? null : renewalInterest.get(player.id);
       if (d === 'renewed') return `<div class="mm-row mm-done">${icon('check')} <strong>${player.firstName} ${player.lastName}</strong> rinnovato — ${formatMoneyK(annualSalary(demanded))}€/anno</div>`;
       if (d === 'released') return `<div class="mm-row mm-done">🔚 <strong>${player.firstName} ${player.lastName}</strong> ${interestedTeam ? `firmato con <strong>${interestedTeam.name}</strong> a parametro zero` : 'svincolato'}</div>`;
+      if (d === 'declined') return `<div class="mm-row mm-done">${icon('warning')} <strong>${player.firstName} ${player.lastName}</strong> non rinnovato — a rischio precontratto</div>`;
+      if (typeof d === 'string' && d.startsWith('refused:')) {
+        const reason = d.slice('refused:'.length);
+        return `<div class="mm-row mm-done">${icon('warning')} <strong>${player.firstName} ${player.lastName}</strong> ha rifiutato il rinnovo (${reason})${gateWinter ? ' — resta sotto contratto, a rischio precontratto' : ' — parte a parametro zero'}</div>`;
+      }
       const overCap = !wageCapAllows(playerTeam, demanded, current);
       const renewBtn = overCap
         ? `<button class="mm-btn mm-green" disabled title="Supera il monte ingaggi">${icon('banned')} Monte ingaggi</button>`
-        : `${durationSelectHtml('data-dur-renew', player.id, player.contract?.duration)}<button class="mm-btn mm-green" data-action="renew" data-pid="${player.id}">Rinnova</button>`;
+        : `<button class="mm-btn mm-green" data-action="renew" data-pid="${player.id}">Proponi rinnovo</button>`;
       const interestNote = interestedTeam ? `<span style="font-size:.75rem;color:#2f6fed">🏟️ Se non rinnovi, firma gratis con ${interestedTeam.name}</span>` : '';
+      const secondBtn = gateWinter
+        ? `<button class="mm-btn" data-action="decline-renew" data-pid="${player.id}">Non rinnovare ora</button>`
+        : `<button class="mm-btn mm-red" data-action="release" data-pid="${player.id}">Svincola</button>`;
       return `<div class="mm-row">
         <div class="mm-pinfo">${formatNationality(player)}<span class="mm-name">${player.firstName} ${player.lastName}</span>${formatRoleBadges(player)}<span style="font-size:.78rem;color:#666">${formatSubRoles(player)}</span><span>${player.age}a</span><span>⚡${player.strength}</span><span class="mm-salary-chg">${formatMoneyK(annualSalary(current))}€ → <strong>${formatMoneyK(annualSalary(demanded))}€</strong>/anno</span>${interestNote}</div>
         <div class="mm-acts">
           ${renewBtn}
-          <button class="mm-btn mm-red"   data-action="release" data-pid="${player.id}">Svincola</button>
+          ${secondBtn}
         </div></div>`;
     }).join('');
   };
@@ -9622,10 +9727,14 @@ function showManagerMarketModal(onConfirm, turnCtx = null) {
       let panelRow = '';
       if (panel === 'renew') {
         const previewSalary = getRenewalSalary(p);
+        const refusalReason = rosaRenewRefusals.get(p.id);
+        const refusalNote = refusalReason
+          ? `<div style="color:#b45309;font-weight:600;margin-top:4px">${icon('warning')} Ha rifiutato la proposta precedente (${refusalReason}) — puoi riprovare.</div>`
+          : '';
         panelRow = `<tr class="rosa-panel-row"><td colspan="10">
-          <strong>Rinnova ${p.firstName} ${p.lastName}</strong> — nuovo stipendio in base alla forza attuale: <strong>${formatMoneyK(annualSalary(previewSalary))}€/anno</strong>
-          ${rosaRenewDurationSelectHtml(p.id, p.contract?.duration)}
-          <button class="mm-btn mm-green" data-action="rosa-confirm-renew" data-pid="${p.id}" ${(ROSA_RENEW_MAX_TOTAL_YEARS - (p.contract?.duration || 0)) < 1 ? 'disabled' : ''}>Conferma rinnovo</button>
+          <strong>Rinnova ${p.firstName} ${p.lastName}</strong> — stipendio e durata concordati col procuratore, in base alla forza attuale: <strong>${formatMoneyK(annualSalary(previewSalary))}€/anno</strong>
+          <button class="mm-btn mm-green" data-action="rosa-confirm-renew" data-pid="${p.id}">Proponi rinnovo</button>
+          ${refusalNote}
         </td></tr>`;
       }
 
@@ -9889,19 +9998,25 @@ function showManagerMarketModal(onConfirm, turnCtx = null) {
       html += `<p class="mm-empty">${icon('banned')} Numero giocatori massimo rosa raggiunto.</p>`;
       return html;
     }
+    html += buildLoanFilterBar(preContractFilter);
     const pool = getPreContractPool(playerTeam).filter(({ player: p }) => {
       if (!mmSessionPreContractConsent.has(p.id)) {
         mmSessionPreContractConsent.set(p.id, Math.random() < estimatePlayerJoinChance(p, playerTeam));
       }
       return mmSessionPreContractConsent.get(p.id);
     });
-    preContractCandidates = pool;
-    if (!pool.length) {
-      html += '<p class="mm-empty">Nessun giocatore in ultimo anno di contratto disposto a firmare con te al momento.</p>';
+    // Stessi filtri di Acquisti/Prestiti (ruolo/posizione/età/forza) e stesso
+    // ordinamento per forza decrescente — non l'ordine di iterazione grezzo
+    // delle rose (getPreContractPool).
+    preContractCandidates = pool
+      .filter(({ player: p }) => matchesFilter(p, preContractFilter))
+      .sort((a, b) => b.player.strength - a.player.strength);
+    if (!preContractCandidates.length) {
+      html += `<p class="mm-empty">${pool.length ? 'Nessun giocatore corrisponde ai filtri selezionati.' : 'Nessun giocatore in ultimo anno di contratto disposto a firmare con te al momento.'}</p>`;
       return html;
     }
     html += `<h4 style="margin:10px 2px 8px;font-size:.9rem;color:#333">📝 Disponibili <span style="font-weight:400;color:#666">(ultimo anno di contratto altrove)</span></h4>`;
-    html += pool.map(({ player: p, fromTeam }, i) => {
+    html += preContractCandidates.map(({ player: p, fromTeam }, i) => {
       const salary = p.contract?.salary ?? getDisplaySalary(p.strength);
       const canAdd = canTeamAcquirePlayer(playerTeam, p);
       const overCap = !preContractWageBillAllows(playerTeam, salary);
@@ -10096,15 +10211,13 @@ function showManagerMarketModal(onConfirm, turnCtx = null) {
     // quando si cambia tab esplicitamente (resetScroll=true).
     const prevScrollTop = resetScroll ? 0 : (overlay.querySelector('.mm-content')?.scrollTop || 0);
 
-    overlay.innerHTML = `
-      <div class="mm-box">
-        <div class="mm-header">
-          <span class="mm-title">🏟️ ${playerTeam.name} — Sessione di Mercato</span>
-          <span class="mm-budget">Budget: <strong>${playerTeam.budget.toFixed(1)}M€</strong> &nbsp;|&nbsp; Monte ingaggi: <strong>${formatMoneyK(annualSalary(getTeamWageBill(playerTeam)))}/${Number.isFinite(playerTeam.wageBudgetCap) ? formatMoneyK(annualSalary(playerTeam.wageBudgetCap)) : '—'}</strong>€/anno &nbsp;|&nbsp; Rosa: <strong>${playerTeam.roster.length}</strong></span>
-        </div>
-        ${turnCtx ? `<p class="mm-hint" style="padding:6px 16px 0">🔄 È il tuo turno nella coda di mercato (come le altre squadre). Fai le operazioni che vuoi, poi <strong>Continua mercato</strong> per proseguire (ti richiamo se ricapita un turno) o <strong>Conferma e Chiudi Mercato</strong> per non essere più interpellato — le altre squadre possono comunque farti offerte nel frattempo, le trovi nella tab Offerte ricevute.</p>` : ''}
-        ${buildBudgetSliderHtml(playerTeam)}
-        <div class="mm-tabs">
+    // Modalità gate rinnovi (pre-scheduler, bloccante): tutte le tab restano
+    // VISIBILI (per contesto: notizie, rosa, offerte già arrivate...) ma non
+    // interagibili — solo la tab Rinnovi resta viva (guardia sulle azioni
+    // più sotto, vedi `if (renewalGate && !['renew','release','decline-renew']...)`.
+    // Footer sostituito da un unico pulsante "Vai al mercato →", disabilitato
+    // finché ogni giocatore della lista non ha una decisione.
+    const tabsHtml = `<div class="mm-tabs">
           <button class="mm-tab${activeTab === 'notizie' ? ' active' : ''}" data-tab="notizie">Notizie</button>
           <button class="mm-tab${activeTab === 'rinnovi' ? ' active' : ''}" data-tab="rinnovi">
             Rinnovi ${renewPending > 0 ? `<span class="mm-badge-count">${renewPending}</span>` : ''}
@@ -10126,13 +10239,31 @@ function showManagerMarketModal(onConfirm, turnCtx = null) {
         const myPreContracts = pendingPreContracts.filter(pc => !pc.toTeam || pc.toTeam === playerTeam).length;
         return playerTeam.roster.filter(p => !leaving.has(p.id)).length + myPreContracts;
       })()})</button>
-        </div>
-        <div class="mm-content">${tabContent}</div>
-        <div class="mm-footer">
+        </div>`;
+
+    const renewGateRemaining = renewalGate ? renewalGate.players.filter(p => !renewalDecisions.has(p.id)).length : 0;
+    const footerHtml = renewalGate
+      ? `<div class="mm-footer">
+          <span class="mm-footer-note">${renewGateRemaining > 0 ? `${icon('warning')} ${renewGateRemaining} decisione/i mancante/i` : `${icon('check')} Tutto deciso`}</span>
+          <button class="mm-btn mm-confirm" id="rg-confirm" ${renewGateRemaining > 0 ? 'disabled style="opacity:.4;cursor:not-allowed"' : ''}>${renewalGate.winter ? 'Vai al mercato invernale →' : 'Apri il mercato →'}</button>
+        </div>`
+      : `<div class="mm-footer">
           <span class="mm-footer-note">${offerPending > 0 ? `${icon('warning')} Rispondi prima alle ${offerPending} offerta/e ricevuta/e` : belowMinRoster ? `${icon('warning')} Servono almeno ${PLAYER_ROSTER_MIN_TO_PROCEED} giocatori in rosa per proseguire (attuali: ${rosterCount})` : playerTeam.budget < 0 ? `${icon('warning')} Budget negativo — cedi giocatori dalla tab Rosa` : needsCoach ? `${icon('warning')} Scegli un allenatore dalla tab Panchina` : pendingCount() > 0 ? `${icon('warning')} ${pendingCount()} decisioni in sospeso` : `${icon('check')} Tutto a posto`}</span>
           ${turnCtx ? `<button class="mm-btn" id="mtc-continue" ${offerPending > 0 ? 'disabled style="opacity:.4;cursor:not-allowed"' : ''}>Continua mercato</button>` : ''}
           <button class="mm-btn mm-confirm" id="mm-confirm" ${(playerTeam.budget < 0 || needsCoach || belowMinRoster || offerPending > 0) ? 'disabled style="opacity:.4;cursor:not-allowed"' : ''}>Conferma e Chiudi Mercato →</button>
+        </div>`;
+
+    overlay.innerHTML = `
+      <div class="mm-box">
+        <div class="mm-header">
+          <span class="mm-title">🏟️ ${playerTeam.name} — Sessione di Mercato</span>
+          <span class="mm-budget">Budget: <strong>${playerTeam.budget.toFixed(1)}M€</strong> &nbsp;|&nbsp; Monte ingaggi: <strong>${formatMoneyK(annualSalary(getTeamWageBill(playerTeam)))}/${Number.isFinite(playerTeam.wageBudgetCap) ? formatMoneyK(annualSalary(playerTeam.wageBudgetCap)) : '—'}</strong>€/anno &nbsp;|&nbsp; Rosa: <strong>${playerTeam.roster.length}</strong></span>
         </div>
+        ${turnCtx ? `<p class="mm-hint" style="padding:6px 16px 0">🔄 È il tuo turno nella coda di mercato (come le altre squadre). Fai le operazioni che vuoi, poi <strong>Continua mercato</strong> per proseguire (ti richiamo se ricapita un turno) o <strong>Conferma e Chiudi Mercato</strong> per non essere più interpellato — le altre squadre possono comunque farti offerte nel frattempo, le trovi nella tab Offerte ricevute.</p>` : ''}
+        ${buildBudgetSliderHtml(playerTeam)}
+        ${tabsHtml}
+        <div class="mm-content">${tabContent}</div>
+        ${footerHtml}
       </div>`;
     const newContent = overlay.querySelector('.mm-content');
     if (newContent) newContent.scrollTop = prevScrollTop;
@@ -10153,7 +10284,7 @@ function showManagerMarketModal(onConfirm, turnCtx = null) {
       });
     }
 
-    wireFilterBar(overlay, activeTab === 'prestiti' ? loanFilter : filter, render);
+    wireFilterBar(overlay, activeTab === 'prestiti' ? loanFilter : activeTab === 'precontratti' ? preContractFilter : filter, render);
     wireBudgetSlider(overlay, playerTeam, render);
     overlay.querySelectorAll('[data-coach-avail]').forEach(btn =>
       btn.addEventListener('click', () => { coachAvail = btn.dataset.coachAvail; render(); })
@@ -10190,20 +10321,49 @@ function showManagerMarketModal(onConfirm, turnCtx = null) {
         const { action, pid, offerIdx } = btn.dataset;
         const id = +pid;
         if (action === 'filter-reset') return; // gestito da wireFilterBar
+        // Gate rinnovi attivo: ogni tab resta VISIBILE per contesto ma non
+        // interagibile — solo le azioni della tab Rinnovi stessa restano
+        // vive, tutto il resto (compra/vendi/presta/allenatore/moduli/
+        // offerte/precontratti) è inerte finché il gate non si chiude.
+        if (renewalGate && !['renew', 'release', 'decline-renew'].includes(action)) return;
         let turnConsumed = false;
 
         if (action === 'renew') {
-          const p = pendingRenewals.find(p => p.id === id);
+          const isWinterGate = renewalGate && renewalGate.winter;
+          const renewList = renewalGate ? renewalGate.players : pendingRenewals;
+          const p = renewList.find(p => p.id === id);
           if (p) {
             const demanded = getRenewalSalary(p);
             const current = p.contract?.salary || getDisplaySalary(p.strength);
             if (wageCapAllows(playerTeam, demanded, current)) {
-              if (!p.contract) p.contract = createContract(p.strength, p.age);
-              const years = +(overlay.querySelector(`select[data-dur-renew="${id}"]`)?.value) || 3;
-              p.contract.salary = demanded;
-              p.contract.duration = years;
-              transferLog.push(`${icon('clipboard')} <em>${p.firstName} ${p.lastName}</em> rinnova con <strong>${playerTeam.name}</strong> — ${p.contract.duration} anni, ${formatMoneyK(annualSalary(demanded))}€/anno`);
-              renewalDecisions.set(id, 'renewed');
+              // Stessa formula della CPU (computeRenewalOutcome): il player
+              // NON sceglie più la durata né ha la garanzia di accettare —
+              // stipendio e durata "concordati col procuratore", con un
+              // vero rischio di rifiuto in base a personalità/prestigio/
+              // adeguatezza alla squadra, esattamente come per la CPU.
+              const outcome = computeRenewalOutcome(p, playerTeam);
+              if (outcome === 0) {
+                const reason = getRenewalRefusalReason(p);
+                transferLog.push(`${icon('clipboard')} <em>${p.firstName} ${p.lastName}</em> rifiuta il rinnovo con <strong>${playerTeam.name}</strong> (${reason})`);
+                if (isWinterGate) {
+                  // Resta sotto contratto (ancora 1 anno): nessuna azione di
+                  // gioco, stesso stato di "Non rinnovare ora" ma con motivo.
+                  renewalDecisions.set(id, `refused:${reason}`);
+                } else {
+                  // Il contratto è già scaduto: se rifiuta l'offerta parte
+                  // comunque, come uno svincolo ma per scelta sua.
+                  playerTeam.roster = playerTeam.roster.filter(x => x !== p);
+                  recordTransfer(p, null, null);
+                  freeAgents.push(p);
+                  renewalDecisions.set(id, `refused:${reason}`);
+                }
+              } else {
+                if (!p.contract) p.contract = createContract(p.strength, p.age);
+                p.contract.salary = demanded;
+                p.contract.duration = outcome;
+                transferLog.push(`${icon('clipboard')} <em>${p.firstName} ${p.lastName}</em> rinnova con <strong>${playerTeam.name}</strong> — ${p.contract.duration} anni, ${formatMoneyK(annualSalary(demanded))}€/anno`);
+                renewalDecisions.set(id, 'renewed');
+              }
             }
           }
         } else if (action === 'release') {
@@ -10212,6 +10372,10 @@ function showManagerMarketModal(onConfirm, turnCtx = null) {
             resolveExpiringPlayerDeparture(p);
             renewalDecisions.set(id, 'released');
           }
+        } else if (action === 'decline-renew') {
+          // Solo gate invernale: nessuna azione di gioco, solo presa d'atto —
+          // il giocatore resta sotto contratto, a rischio precontratto CPU.
+          renewalDecisions.set(id, 'declined');
         } else if (action === 'accept-offer') {
           const offer = pendingAIOffers.find(o => o.player.id === id);
           // Guardia difensiva: se il giocatore ha già lasciato la rosa per un
@@ -10435,13 +10599,19 @@ function showManagerMarketModal(onConfirm, turnCtx = null) {
           }
         } else if (action === 'rosa-confirm-renew') {
           const p = playerTeam.roster.find(x => x.id === id);
-          const years = +(overlay.querySelector(`select[data-rosa-renew-dur="${id}"]`)?.value) || 3;
-          if (p && executeAnytimeRenew(p, years)) {
-            rosaRowPanel.delete(id);
-            // Se il giocatore era anche tra i contratti in scadenza (tab
-            // Rinnovi), il rinnovo fatto da qui deve farlo sparire anche da
-            // lì — altrimenti resterebbe mostrato come "ancora da decidere".
-            if (pendingRenewals.some(r => r.id === id)) renewalDecisions.set(id, 'renewed');
+          if (p) {
+            const outcome = executeAnytimeRenew(p);
+            if (outcome.success) {
+              rosaRowPanel.delete(id);
+              rosaRenewRefusals.delete(id);
+              // Se il giocatore era anche tra i contratti in scadenza (tab
+              // Rinnovi), il rinnovo fatto da qui deve farlo sparire anche da
+              // lì — altrimenti resterebbe mostrato come "ancora da decidere".
+              if (pendingRenewals.some(r => r.id === id)) renewalDecisions.set(id, 'renewed');
+            } else if (outcome.refused) {
+              // Il pannello resta aperto: mostra il motivo, il DS può riprovare.
+              rosaRenewRefusals.set(id, outcome.reason);
+            }
           }
         } else if (action === 'rosa-release') {
           const p = playerTeam.roster.find(x => x.id === id);
@@ -10465,6 +10635,19 @@ function showManagerMarketModal(onConfirm, turnCtx = null) {
         render();
       });
     });
+
+    if (renewalGate) {
+      const gateConfirmBtn = overlay.querySelector('#rg-confirm');
+      if (gateConfirmBtn && !gateConfirmBtn.disabled) {
+        gateConfirmBtn.addEventListener('click', () => {
+          overlay.remove();
+          if (!renewalGate.winter) pendingRenewals = [];
+          recalculateTeamStrength(playerTeam);
+          renewalGate.onGateDone();
+        });
+      }
+      return;
+    }
 
     overlay.querySelector('#mm-confirm').addEventListener('click', () => {
       // Giocatori in scadenza non decisi → parametro zero automatico (o
