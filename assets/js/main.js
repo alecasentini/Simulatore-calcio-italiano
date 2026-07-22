@@ -8573,7 +8573,10 @@ function runTurnBasedMarket(onComplete = () => {}, maxRounds = 40) {
 
   console.log('%c=== MERCATO A TURNI — inizio ===', 'color:#16a34a;font-weight:bold;font-size:14px');
   console.log('Ordine di turno (prime 10, per forza DS):', order.slice(0, 10).map(t => `${t.name} (DS ${t.ds?.strength ?? '—'})`));
-  if (playerTeam) showMarketProgressBar();
+  // Sempre visibile, anche in modalità spettatore/DS senza squadra (playerTeam
+  // null): senza questo, il mercato proseguiva comunque in background ma senza
+  // nessun feedback visivo — sembrava bloccato mentre in realtà avanzava.
+  showMarketProgressBar();
   // Ritardo tra un turno CPU automatico e il successivo: puramente di ritmo/
   // percezione (nessuna logica dipende da questo), lascia respirare il
   // ticker e la barra invece di risolvere l'intero mercato in un solo tick
