@@ -58,7 +58,7 @@ Una volta stabilito l'ordine (per forza DS/reputazione) e la vetrina iniziale, s
 - Ogni squadra, quando arriva il suo turno, fa **UNA azione** (o passa se non ha nulla da fare).
 - Se una squadra è stata coinvolta nella transazione di un'altra (es. le hanno comprato un giocatore) durante questo stesso giro, il suo turno per questo giro **salta** — verrà rivalutata al giro successivo.
 - Un giro finisce quando si è passato per tutte le 60 squadre.
-- **Il mercato finisce quando un giro intero produce zero azioni** (tutti passano) — oppure dopo un tetto di sicurezza di giri (40 in estate, 20 in inverno).
+- **Il mercato finisce quando un giro intero produce zero azioni** (tutti passano) — oppure dopo un tetto di sicurezza di giri, che coincide con la durata calendariale del mercato (60 giorni in estate, 30 in inverno).
 
 ### Cosa fa una CPU al suo turno (in ordine di priorità)
 
@@ -122,7 +122,7 @@ Quando un giro intero non produce più nessuna azione, lo scheduler si ferma. **
 
 - **Mercato estero** (solo Serie A, indipendente dai turni): ogni squadra di A sotto il tetto di 3 stranieri ha una possibilità di prendere un candidato estero. Un giocatore **italiano** non può mai partire per l'estero; un giocatore **straniero già in rosa** (di qualunque squadra, CPU o tua) può invece essere rivenduto all'estero.
 - **Poaching per blasone** (STEP 6d, solo estivo): cascata "il ricco compra dal povero" — una squadra prestigiosa con tanto budget (15M€+) può corteggiare un giocatore di una squadra meno blasonata, offrendo 1.5× il valore. Rispetta comunque la gerarchia di lega e il consenso del giocatore. Se il giocatore appartiene a te, ricevi un'**offerta vera** nella tab Offerte (puoi accettare o rifiutare liberamente, non è mai imposta).
-- **Tetto di budget**: ri-applicato per ogni CPU (400M€ A / 120M€ B / 40M€ C). L'eccedenza non spesa **si accumula per intero** (carry-over totale, senza tetto massimo) alla sessione di mercato successiva, sommandosi al nuovo tetto di categoria — anche in caso di promozione o retrocessione, il tesoretto accumulato si somma sempre al nuovo tetto senza ridimensionamenti.
+- **Tetto morbido al carry-over**: a fine stagione, se il budget di una squadra supera il tetto della sua categoria (400M€ A / 150M€ B / 50M€ C), il 35% della sola parte eccedente viene riassorbito — non un taglio secco al tetto (che stravolgerebbe di colpo le prospettive di mercato), un decadimento che fa convergere un caso estremo verso il tetto in una decina di stagioni circa. Sotto il tetto nessuna riduzione, mai. Una squadra appena promossa o retrocessa viene subito misurata sul tetto della sua nuova categoria.
 
 ---
 
@@ -132,7 +132,7 @@ Quando un giro intero non produce più nessuna azione, lo scheduler si ferma. **
 |---|---|---|
 | Contratti in scadenza | Risoluzione immediata per tutti (CPU automatica, tua manuale) PRIMA del giro 1 (§1a) | **No** — niente risoluzione immediata; chi scade a fine stagione entra nel pool **Precontratti**, contendibile durante i turni (§1a-bis) |
 | Vetrina iniziale | STEP 6a completo (esuberi 26+, sotto media, stelle B/C) | Versione più semplice: ogni CPU ha il 35% di possibilità di mettere in vendita un giocatore a caso (forza >40, non già in prestito) |
-| Mercato a turni | Sì, tetto di sicurezza 40 giri | Sì, stesso meccanismo, tetto di sicurezza **20 giri** (storicamente più corto: ~21 giri medi in estate contro ~16 in inverno) |
+| Mercato a turni | Sì, dura al massimo 60 giorni | Sì, stesso meccanismo, dura al massimo **30 giorni** (storicamente più corto: ~21 giri medi in estate contro ~16 in inverno) |
 | Il tuo turno reale | Vera finestra di mercato con tab Notizie/Rinnovi/Offerte/Acquisti/Prestiti/Panchina/Moduli/Rosa | **Stessa identica finestra**, con in più la tab **Precontratti** |
 | Rinnovi durante i turni | Tab Rinnovi per estensioni anticipate (proattive, gratuite) — nessun contratto in scadenza quest'estate resta indeciso | Stessa tab Rinnovi per estensioni anticipate/proattive — in più, rinnovare un giocatore in ultimo anno di contratto lo toglie dal pool Precontratti |
 | Meccanismo dei precontratti | Non esiste (i contratti in scadenza si risolvono subito, §1a) | Pool **Precontratti** aperto a tutte le squadre, azione a turno (§1a-bis) |

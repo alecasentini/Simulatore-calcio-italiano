@@ -2188,6 +2188,19 @@ details[open] summary::after {
   background: #b91c1c;
 }
 
+/* Badge verde/rosso per il bonus/malus di PERSONALITÀ dell'allenatore (§
+   richiesta esplicita dell'utente: separato dal colore del nome/riga, che
+   segnala invece solo il fit di posizione/ruolo — due effetti indipendenti,
+   due segnali visivi distinti). Verde = bonus (es. un difensore di un
+   Catenacciaro), rosso = malus (es. un giovane di un Tradizionalista). */
+.md-ovr-bonus {
+  background: var(--color-success);
+}
+
+.md-ovr-malus {
+  background: #b91c1c;
+}
+
 .md-forma {
   font-size: 0.72rem;
   margin-left: 6px;
@@ -2195,6 +2208,10 @@ details[open] summary::after {
 
 .md-status-tag {
   font-size: 0.7rem;
+  /* Non deve ereditare il corsivo di .md-oop/.md-oor (righe fuori posizione/
+     ruolo) — § richiesta esplicita dell'utente: l'emoji infortunio non va
+     in corsivo anche quando il giocatore è fuori posizione/ruolo. */
+  font-style: normal;
 }
 
 .md-events-section {

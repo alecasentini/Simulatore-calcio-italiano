@@ -90,6 +90,20 @@ let seasonCount = 0;
 let nextPlayerId = 0;
 let championsHistory = [];
 let transferLog = [];
+// Contatore globale monotono: assegnato a ogni recordTransfer, dà a
+// buildTeamMarketMoves un ordine CRONOLOGICO vero (§ richiesta esplicita
+// dell'utente) invece del solo ordine di iterazione della rosa — season/left
+// da soli non bastano, più mosse nella stessa stagione sono indistinguibili.
+let transferSeq = 0;
+// Stagione mostrata dalla tab "Mercato" della scheda squadra (§ bug
+// segnalato dall'utente): seasonCount incrementa SUBITO a fine stagione,
+// PRIMA che il mercato estivo successivo inizi davvero — usare seasonCount
+// direttamente in buildTeamMarketMoves faceva sparire acquisti/cessioni
+// appena conclusi (registrati con la stagione VECCHIA) senza che quelli
+// nuovi fossero ancora arrivati. Resta sulla stagione vecchia finché
+// updateTeamStrengths non la aggiorna, esattamente quando il mercato
+// successivo comincia per davvero (stesso punto in cui si azzera transferLog).
+let marketDisplaySeason = 0;
 // Indice in transferLog da cui iniziano le notizie del mercato invernale
 // (impostato quando parte l'inverno, azzerato quando transferLog riparte a
 // inizio stagione) — usato per marcare nelle Notizie il punto in cui il
@@ -123,6 +137,20 @@ let renewalInterest = new Map(); // player.id → squadra interessata a prenderl
 let pendingTransferMarket = [];  // giocatori rimasti sul mercato dopo le trattative AI
 let pendingForeignScoutTargets = []; // 20 talenti stranieri scovati dall'area scout (solo Serie A)
 let pendingPreContracts = [];    // { player, fromTeam } — pre-contratti firmati nel mercato invernale
+// ─── LISTE DI MERCATO DEL PLAYER ───────────────────────────────────────────────
+// "Metti in lista trasferimento/prestito" (tab Rosa): dichiarazione di
+// disponibilità, GRATUITA (non consuma il turno, come Rinnovi/Allenatore/
+// Moduli) — è l'equivalente per l'umano della vetrina §1b (buildVoluntary-
+// TransferListing) che le CPU usano già per mettersi in vetrina senza
+// vendersi. Da sola non vende/presta nulla: rende solo il giocatore visibile
+// alla valutazione delle CPU ai LORO turni successivi (vedi
+// findRealOfferForPlayerSurplus/findLoanRequestForPlayerSurplus), che
+// generano un'offerta VERA nella tab Offerte ricevute — mai un'accettazione
+// automatica. Persistono per l'intera sessione, si azzerano a ogni nuova
+// sessione di mercato (stessi punti di reset di pendingAIOffers).
+let playerTransferListed = new Set(); // player.id
+let playerLoanListed = new Set();     // player.id
+let pendingAILoanOffers = [];    // richieste di prestito CPU per giocatori TUOI listati in prestito
 // Stato di sessione di showManagerMarketModal (Fase 16): dal momento in cui
 // il player può essere richiamato più volte nella stessa sessione di
 // mercato (una volta per turno, non più una sola volta a fine mercato),
@@ -133,6 +161,7 @@ let pendingPreContracts = [];    // { player, fromTeam } — pre-contratti firma
 // proceedToBriefing/startMarket, insieme a pendingAIOffers.
 let mmSessionRenewalDecisions = new Map();
 let mmSessionOfferDecisions = new Map();
+let mmSessionLoanOfferDecisions = new Map(); // player.id → 'accepted' | 'refused' (richieste di prestito ricevute)
 let mmSessionBoughtIds = new Set();
 let mmSessionSoldIds = new Set();
 // §5 REGOLE_CALCIOMERCATO — divieto di doppio trasferimento nella stessa
@@ -289,146 +318,141 @@ const ITALIAN_LAST_NAMES = [
   'Vacca', 'Valentini', 'Vecchi', 'Venturi', 'Vezzosi', 'Viale', 'Vianello', 'Vigano',
   'Vigliotti', 'Villani', 'Violante', 'Visconti', 'Viti', 'Vivaldi', 'Volpi', 'Zambelli',
   'Zampieri', 'Zanardi', 'Zannoni', 'Zappalà', 'Zecca', 'Zenone', 'Zerbino', 'Zoppi',
-  'Marchini', 'Marchelli', 'Marchello', 'Marchone', 'Marchoni', 'Marchuzzo', 'Marchucci', 'Marchacci',
-  'Marchesi', 'Marchin', 'Marcholo', 'Marchani', 'Marchuti', 'Giordi', 'Giordini', 'Giordetti',
-  'Giordelli', 'Giordello', 'Giordone', 'Giordoni', 'Giorduzzo', 'Giorducci', 'Giordacci', 'Giordesi',
-  'Giordin', 'Giordolo', 'Giordani', 'Giorduti', 'Rossini', 'Rosselli', 'Rossello', 'Rossone',
-  'Rossoni', 'Rossuzzo', 'Rossucci', 'Rossacci', 'Rossesi', 'Rossin', 'Rossolo', 'Rossani',
-  'Rossuti', 'Bianci', 'Biancini', 'Biancetti', 'Biancelli', 'Biancello', 'Biancone', 'Bianconi',
-  'Biancuzzo', 'Biancucci', 'Biancacci', 'Biancesi', 'Biancin', 'Biancolo', 'Biancani', 'Biancuti',
-  'Grassini', 'Grassetti', 'Grasselli', 'Grassello', 'Grassone', 'Grassoni', 'Grassuzzo', 'Grassucci',
-  'Grassacci', 'Grassesi', 'Grassin', 'Grassolo', 'Grassani', 'Grassuti', 'Greci', 'Grecini',
-  'Grecetti', 'Grecelli', 'Grecello', 'Grecone', 'Greconi', 'Grecuzzo', 'Grecucci', 'Grecacci',
-  'Grecesi', 'Grecin', 'Grecolo', 'Grecani', 'Grecuti', 'Russi', 'Russini', 'Russetti',
-  'Russelli', 'Russello', 'Russone', 'Russoni', 'Russuzzo', 'Russucci', 'Russacci', 'Russesi',
-  'Russin', 'Russolo', 'Russani', 'Russuti', 'Colombi', 'Colombini', 'Colombetti', 'Colombelli',
-  'Colombello', 'Colombone', 'Colomboni', 'Colombuzzo', 'Colombucci', 'Colombacci', 'Colombesi', 'Colombin',
-  'Colombolo', 'Colombani', 'Colombuti', 'Ferrini', 'Ferrelli', 'Ferrello', 'Ferrone', 'Ferroni',
-  'Ferruzzo', 'Ferracci', 'Ferresi', 'Ferrin', 'Ferrolo', 'Ferrani', 'Ferruti', 'Mori',
-  'Morini', 'Morelli', 'Morello', 'Morone', 'Moroni', 'Moruzzo', 'Morucci', 'Moracci',
-  'Moresi', 'Morin', 'Morolo', 'Morani', 'Moruti', 'Santi', 'Santini', 'Santetti',
-  'Santelli', 'Santello', 'Santone', 'Santoni', 'Santuzzo', 'Santucci', 'Santacci', 'Santesi',
-  'Santin', 'Santolo', 'Santani', 'Santuti', 'Rizzi', 'Rizzini', 'Rizzetti', 'Rizzelli',
-  'Rizzello', 'Rizzone', 'Rizzoni', 'Rizzuzzo', 'Rizzucci', 'Rizzacci', 'Rizzesi', 'Rizzin',
-  'Rizzolo', 'Rizzani', 'Rizzuti', 'Contini', 'Contetti', 'Contelli', 'Contello', 'Contone',
-  'Contoni', 'Contuzzo', 'Contucci', 'Contacci', 'Contesi', 'Contin', 'Contolo', 'Contani',
-  'Contuti', 'Amati', 'Amatini', 'Amatetti', 'Amatelli', 'Amatello', 'Amatone', 'Amatoni',
-  'Amatuzzo', 'Amatucci', 'Amatacci', 'Amatesi', 'Amatin', 'Amatolo', 'Amatani', 'Amatuti',
-  'Pelli', 'Pellini', 'Pelletti', 'Pellelli', 'Pellello', 'Pellone', 'Pelloni', 'Pelluzzo',
-  'Pellucci', 'Pellacci', 'Pellesi', 'Pellin', 'Pellolo', 'Pellani', 'Pelluti', 'Fiori',
-  'Fioretti', 'Fiorelli', 'Fiorello', 'Fiorone', 'Fioroni', 'Fioruzzo', 'Fiorucci', 'Fioracci',
-  'Fioresi', 'Fiorin', 'Fiorolo', 'Fiorani', 'Fioruti', 'Costi', 'Costini', 'Costetti',
-  'Costelli', 'Costello', 'Costone', 'Costoni', 'Costuzzo', 'Costucci', 'Costacci', 'Costesi',
-  'Costin', 'Costolo', 'Costani', 'Costuti', 'Cavalletti', 'Cavallelli', 'Cavallello', 'Cavallone',
-  'Cavalloni', 'Cavalluzzo', 'Cavallucci', 'Cavallacci', 'Cavallesi', 'Cavallin', 'Cavallolo', 'Cavallani',
-  'Cavalluti', 'Nardini', 'Nardetti', 'Nardelli', 'Nardello', 'Nardone', 'Nardoni', 'Narduzzo',
-  'Narducci', 'Nardacci', 'Nardesi', 'Nardin', 'Nardolo', 'Nardani', 'Narduti', 'Viteli',
-  'Vitelini', 'Viteletti', 'Vitelelli', 'Vitelello', 'Vitelone', 'Viteloni', 'Viteluzzo', 'Vitelucci',
-  'Vitelacci', 'Vitelesi', 'Vitelin', 'Vitelolo', 'Vitelani', 'Viteluti', 'Longi', 'Longini',
-  'Longetti', 'Longelli', 'Longello', 'Longone', 'Longoni', 'Longuzzo', 'Longucci', 'Longacci',
-  'Longesi', 'Longin', 'Longolo', 'Longani', 'Longuti', 'Rivi', 'Rivini', 'Rivetti',
-  'Rivelli', 'Rivello', 'Rivone', 'Rivoni', 'Rivuzzo', 'Rivucci', 'Rivacci', 'Rivesi',
-  'Rivin', 'Rivolo', 'Rivani', 'Rivuti', 'Sabbi', 'Sabbini', 'Sabbetti', 'Sabbelli',
-  'Sabbello', 'Sabbone', 'Sabboni', 'Sabbuzzo', 'Sabbucci', 'Sabbacci', 'Sabbesi', 'Sabbin',
-  'Sabbolo', 'Sabbani', 'Sabbuti', 'Casti', 'Castini', 'Castetti', 'Castelli', 'Castello',
-  'Castone', 'Castoni', 'Castuzzo', 'Castucci', 'Castacci', 'Castesi', 'Castin', 'Castolo',
-  'Castani', 'Castuti', 'Saraci', 'Saracini', 'Saracetti', 'Saracelli', 'Saracello', 'Saracone',
-  'Saraconi', 'Saracuzzo', 'Saracucci', 'Saracacci', 'Saracesi', 'Saracin', 'Saracolo', 'Saracani',
-  'Saracuti', 'Guidini', 'Guidetti', 'Guidelli', 'Guidello', 'Guidone', 'Guidoni', 'Guiduzzo',
-  'Guiducci', 'Guidacci', 'Guidesi', 'Guidin', 'Guidolo', 'Guidani', 'Guiduti', 'Palmi',
-  'Palmini', 'Palmetti', 'Palmelli', 'Palmello', 'Palmone', 'Palmoni', 'Palmuzzo', 'Palmucci',
-  'Palmacci', 'Palmesi', 'Palmin', 'Palmolo', 'Palmani', 'Palmuti', 'Corti', 'Cortini',
-  'Cortetti', 'Cortelli', 'Cortello', 'Cortone', 'Cortoni', 'Cortuzzo', 'Cortucci', 'Cortacci',
-  'Cortesi', 'Cortin', 'Cortolo', 'Cortani', 'Cortuti', 'Serri', 'Serrini', 'Serretti',
-  'Serrelli', 'Serrello', 'Serrone', 'Serroni', 'Serruzzo', 'Serrucci', 'Serracci', 'Serresi',
-  'Serrin', 'Serrolo', 'Serrani', 'Serruti', 'Fonti', 'Fontini', 'Fontetti', 'Fontelli',
-  'Fontello', 'Fontone', 'Fontoni', 'Fontuzzo', 'Fontucci', 'Fontacci', 'Fontesi', 'Fontin',
-  'Fontolo', 'Fontani', 'Fontuti', 'Barbi', 'Barbini', 'Barbetti', 'Barbelli', 'Barbello',
-  'Barbone', 'Barboni', 'Barbuzzo', 'Barbucci', 'Barbacci', 'Barbesi', 'Barbin', 'Barbolo',
-  'Barbani', 'Barbuti', 'Franci', 'Francini', 'Francetti', 'Francelli', 'Francello', 'Francone',
-  'Franconi', 'Francuzzo', 'Francucci', 'Francacci', 'Francesi', 'Francin', 'Francolo', 'Francani',
-  'Francuti', 'Albi', 'Albetti', 'Albelli', 'Albello', 'Albone', 'Alboni', 'Albuzzo',
-  'Albucci', 'Albacci', 'Albesi', 'Albin', 'Albolo', 'Albani', 'Albuti', 'Belli',
-  'Belletti', 'Bellelli', 'Bellello', 'Bellone', 'Belloni', 'Belluzzo', 'Bellucci', 'Bellacci',
-  'Bellesi', 'Bellin', 'Bellolo', 'Bellani', 'Belluti', 'Merli', 'Merlini', 'Merletti',
-  'Merlelli', 'Merlello', 'Merlone', 'Merloni', 'Merluzzo', 'Merlucci', 'Merlacci', 'Merlesi',
-  'Merlin', 'Merlolo', 'Merlani', 'Merluti', 'Negi', 'Negini', 'Negetti', 'Negelli',
-  'Negello', 'Negone', 'Negoni', 'Neguzzo', 'Negucci', 'Negacci', 'Negesi', 'Negin',
-  'Negolo', 'Negani', 'Neguti', 'Polini', 'Poletti', 'Polelli', 'Polello', 'Polone',
-  'Poloni', 'Poluzzo', 'Polucci', 'Polacci', 'Polesi', 'Polin', 'Pololo', 'Polani',
-  'Poluti', 'Rondi', 'Rondini', 'Rondetti', 'Rondelli', 'Rondello', 'Rondone', 'Rondoni',
-  'Ronduzzo', 'Ronducci', 'Rondacci', 'Rondesi', 'Rondin', 'Rondolo', 'Rondani', 'Ronduti',
-  'Sacci', 'Saccini', 'Saccetti', 'Saccelli', 'Saccello', 'Saccone', 'Sacconi', 'Saccuzzo',
-  'Saccucci', 'Saccacci', 'Saccesi', 'Saccin', 'Saccolo', 'Saccani', 'Saccuti', 'Tassini',
-  'Tassetti', 'Tasselli', 'Tassello', 'Tassone', 'Tassoni', 'Tassuzzo', 'Tassucci', 'Tassacci',
-  'Tassesi', 'Tassin', 'Tassolo', 'Tassani', 'Tassuti', 'Vari', 'Varini', 'Varetti',
-  'Varelli', 'Varello', 'Varone', 'Varoni', 'Varuzzo', 'Varucci', 'Varacci', 'Varesi',
-  'Varin', 'Varolo', 'Varani', 'Varuti', 'Zambi', 'Zambini', 'Zambetti', 'Zambello',
-  'Zambone', 'Zamboni', 'Zambuzzo', 'Zambucci', 'Zambacci', 'Zambesi', 'Zambin', 'Zambolo',
-  'Zambani', 'Zambuti', 'Bresi', 'Bresini', 'Bresetti', 'Breselli', 'Bresello', 'Bresone',
-  'Bresoni', 'Bresuzzo', 'Bresucci', 'Bresacci', 'Bresesi', 'Bresin', 'Bresolo', 'Bresani',
-  'Bresuti', 'Caldi', 'Caldini', 'Caldetti', 'Caldelli', 'Caldello', 'Caldone', 'Caldoni',
-  'Calduzzo', 'Calducci', 'Caldacci', 'Caldesi', 'Caldin', 'Caldolo', 'Caldani', 'Calduti',
-  'Dessi', 'Dessini', 'Dessetti', 'Desselli', 'Dessello', 'Dessone', 'Dessoni', 'Dessuzzo',
-  'Dessucci', 'Dessacci', 'Dessesi', 'Dessin', 'Dessolo', 'Dessani', 'Dessuti', 'Estei',
-  'Esteini', 'Esteetti', 'Esteelli', 'Esteello', 'Esteone', 'Esteoni', 'Esteuzzo', 'Esteucci',
-  'Esteacci', 'Esteesi', 'Estein', 'Esteolo', 'Esteani', 'Esteuti', 'Fabbi', 'Fabbini',
-  'Fabbetti', 'Fabbelli', 'Fabbello', 'Fabbone', 'Fabboni', 'Fabbuzzo', 'Fabbucci', 'Fabbacci',
-  'Fabbesi', 'Fabbin', 'Fabbolo', 'Fabbani', 'Fabbuti', 'Gaspi', 'Gaspini', 'Gaspetti',
-  'Gaspelli', 'Gaspello', 'Gaspone', 'Gasponi', 'Gaspuzzo', 'Gaspucci', 'Gaspacci', 'Gaspesi',
-  'Gaspin', 'Gaspolo', 'Gaspani', 'Gasputi', 'Ianni', 'Iannini', 'Iannetti', 'Iannelli',
-  'Iannello', 'Iannone', 'Iannoni', 'Iannuzzo', 'Iannacci', 'Iannesi', 'Iannin', 'Iannolo',
-  'Iannani', 'Iannuti', 'Lotti', 'Lottini', 'Lottetti', 'Lottelli', 'Lottello', 'Lottone',
-  'Lottoni', 'Lottuzzo', 'Lottucci', 'Lottacci', 'Lottesi', 'Lottin', 'Lottolo', 'Lottani',
-  'Lottuti', 'Menni', 'Mennini', 'Mennetti', 'Mennelli', 'Mennello', 'Mennone', 'Mennoni',
-  'Mennuzzo', 'Mennucci', 'Mennacci', 'Mennesi', 'Mennin', 'Mennolo', 'Mennani', 'Mennuti',
-  'Notti', 'Nottini', 'Nottetti', 'Nottelli', 'Nottello', 'Nottone', 'Nottoni', 'Nottuzzo',
-  'Nottucci', 'Nottacci', 'Nottesi', 'Nottin', 'Nottolo', 'Nottani', 'Nottuti', 'Orsii',
-  'Orsiini', 'Orsietti', 'Orsielli', 'Orsiello', 'Orsione', 'Orsioni', 'Orsiuzzo', 'Orsiucci',
-  'Orsiacci', 'Orsiesi', 'Orsiin', 'Orsiolo', 'Orsiani', 'Orsiuti', 'Pasti', 'Pastini',
-  'Pastetti', 'Pastelli', 'Pastello', 'Pastone', 'Pastoni', 'Pastuzzo', 'Pastucci', 'Pastacci',
-  'Pastesi', 'Pastin', 'Pastolo', 'Pastani', 'Pastuti', 'Quesi', 'Quesini', 'Quesetti',
-  'Queselli', 'Quesello', 'Quesone', 'Quesoni', 'Quesuzzo', 'Quesucci', 'Quesacci', 'Quesesi',
-  'Quesin', 'Quesolo', 'Quesani', 'Quesuti', 'Rotai', 'Rotaini', 'Rotaetti', 'Rotaelli',
-  'Rotaello', 'Rotaone', 'Rotaoni', 'Rotauzzo', 'Rotaucci', 'Rotaacci', 'Rotaesi', 'Rotain',
-  'Rotaolo', 'Rotaani', 'Rotauti', 'Salvini', 'Salvetti', 'Salvelli', 'Salvello', 'Salvone',
-  'Salvoni', 'Salvuzzo', 'Salvucci', 'Salvacci', 'Salvesi', 'Salvin', 'Salvolo', 'Salvani',
-  'Salvuti', 'Torni', 'Tornini', 'Tornetti', 'Tornelli', 'Tornello', 'Tornone', 'Tornoni',
-  'Tornuzzo', 'Tornucci', 'Tornacci', 'Tornesi', 'Tornin', 'Tornolo', 'Tornani', 'Tornuti',
-  'Ubali', 'Ubalini', 'Ubaletti', 'Ubalelli', 'Ubalello', 'Ubalone', 'Ubaloni', 'Ubaluzzo',
-  'Ubalucci', 'Ubalacci', 'Ubalesi', 'Ubalin', 'Ubalolo', 'Ubalani', 'Ubaluti', 'Vergi',
-  'Vergini', 'Vergetti', 'Vergelli', 'Vergello', 'Vergone', 'Vergoni', 'Verguzzo', 'Vergucci',
-  'Vergacci', 'Vergesi', 'Vergin', 'Vergolo', 'Verguti', 'Candi', 'Candini', 'Candetti',
-  'Candelli', 'Candello', 'Candone', 'Candoni', 'Canduzzo', 'Canducci', 'Candacci', 'Candesi',
-  'Candin', 'Candolo', 'Candani', 'Canduti', 'Cavouri', 'Cavourini', 'Cavouretti', 'Cavourelli',
-  'Cavourello', 'Cavourone', 'Cavouroni', 'Cavouruzzo', 'Cavourucci', 'Cavouracci', 'Cavouresi', 'Cavourin',
-  'Cavourolo', 'Cavourani', 'Cavouruti', 'Corbi', 'Corbini', 'Corbetti', 'Corbelli', 'Corbello',
-  'Corbone', 'Corboni', 'Corbuzzo', 'Corbucci', 'Corbacci', 'Corbesi', 'Corbin', 'Corbolo',
-  'Corbani', 'Corbuti', 'Daldi', 'Daldini', 'Daldetti', 'Daldelli', 'Daldello', 'Daldone',
-  'Daldoni', 'Dalduzzo', 'Dalducci', 'Daldacci', 'Daldesi', 'Daldin', 'Daldolo', 'Daldani',
-  'Dalduti', 'Falci', 'Falcini', 'Falcetti', 'Falcelli', 'Falcello', 'Falcone', 'Falconi',
-  'Falcuzzo', 'Falcucci', 'Falcacci', 'Falcesi', 'Falcin', 'Falcolo', 'Falcani', 'Falcuti',
-  'Feni', 'Fenini', 'Fenetti', 'Fenelli', 'Fenello', 'Fenone', 'Fenoni', 'Fenuzzo',
-  'Fenucci', 'Fenacci', 'Fenesi', 'Fenin', 'Fenolo', 'Fenani', 'Fenuti', 'Galdi',
-  'Galdini', 'Galdetti', 'Galdelli', 'Galdello', 'Galdone', 'Galdoni', 'Galduzzo', 'Galducci',
-  'Galdacci', 'Galdesi', 'Galdin', 'Galdolo', 'Galdani', 'Galduti', 'Ianci', 'Iancini',
-  'Iancetti', 'Iancelli', 'Iancello', 'Iancone', 'Ianconi', 'Iancuzzo', 'Iancucci', 'Iancacci',
-  'Iancesi', 'Iancin', 'Iancolo', 'Iancani', 'Iancuti', 'Lambi', 'Lambini', 'Lambetti',
-  'Lambelli', 'Lambello', 'Lambone', 'Lamboni', 'Lambuzzo', 'Lambucci', 'Lambacci', 'Lambesi',
-  'Lambin', 'Lambolo', 'Lambani', 'Lambuti', 'Mandi', 'Mandini', 'Mandetti', 'Mandelli',
-  'Mandello', 'Mandone', 'Mandoni', 'Manduzzo', 'Manducci', 'Mandacci', 'Mandesi', 'Mandin',
-  'Mandolo', 'Mandani', 'Manduti', 'Nassi', 'Nassini', 'Nassetti', 'Nasselli', 'Nassello',
-  'Nassone', 'Nassoni', 'Nassuzzo', 'Nassucci', 'Nassacci', 'Nassesi', 'Nassin', 'Nassolo',
-  'Nassani', 'Nassuti', 'Ognibi', 'Ognibini', 'Ognibetti', 'Ognibelli', 'Ognibello', 'Ognibone',
-  'Ogniboni', 'Ognibuzzo', 'Ognibucci', 'Ognibacci', 'Ognibesi', 'Ognibin', 'Ognibolo', 'Ognibani',
-  'Ognibuti', 'Paladi', 'Paladini', 'Paladetti', 'Paladelli', 'Paladello', 'Paladone', 'Paladoni',
-  'Paladuzzo', 'Paladucci', 'Paladacci', 'Paladesi', 'Paladin', 'Paladolo', 'Paladani', 'Paladuti',
-  'Quarti', 'Quartini', 'Quartetti', 'Quartelli', 'Quartello', 'Quartone', 'Quartoni', 'Quartuzzo',
-  'Quartucci', 'Quartacci', 'Quartesi', 'Quartin', 'Quartolo', 'Quartani', 'Quartuti', 'Riccini',
-  'Riccetti', 'Riccelli', 'Riccello', 'Riccone', 'Ricconi', 'Riccuzzo', 'Riccucci', 'Riccacci',
-  'Riccesi', 'Riccin', 'Riccolo', 'Riccani', 'Riccuti', 'Sciari', 'Sciarini', 'Sciaretti',
-  'Sciarelli', 'Sciarello', 'Sciarone', 'Sciaroni', 'Sciaruzzo', 'Sciarucci', 'Sciaracci', 'Sciaresi',
-  'Sciarin', 'Sciarolo', 'Sciarani', 'Sciaruti', 'Tebaldi', 'Tebaldini'
+  'Locatelli', 'Bergamaschi', 'Fumagalli', 'Vismara', 'Motta', 'Riboldi', 'Gallarati', 'Besana',
+  'Cazzaniga', 'Airoldi', 'Beretta', 'Bonomi', 'Radaelli', 'Frigerio', 'Redaelli', 'Perego',
+  'Colnaghi', 'Crippa', 'Galbiati', 'Panzeri', 'Elli', 'Sironi', 'Consonni', 'Arrigoni',
+  'Bosisio', 'Meroni', 'Gilardi', 'Gervasoni', 'Bettoni', 'Zanchi', 'Bonaiti', 'Ferrandi',
+  'Anghileri', 'Redolfi', 'Ornaghi', 'Molteni', 'Pirovano', 'Comi', 'Valsecchi', 'Introzzi',
+  'Colleoni', 'Bellani', 'Prandoni', 'Fasoli', 'Fossati', 'Zappa', 'Airaghi', 'Riganti',
+  'Cazzola', 'Bettinelli', 'Bertola', 'Cerutti', 'Chiabotto', 'Gastaldi', 'Bertolotto', 'Peirano',
+  'Bertone', 'Rolando', 'Barbero', 'Ghigo', 'Actis', 'Bertaina', 'Fenoglio', 'Baudino',
+  'Chiabrando', 'Massa', 'Bracco', 'Peano', 'Revelli', 'Isnardi', 'Comba', 'Bosio',
+  'Bertello', 'Occhetti', 'Gribaudo', 'Zanella', 'Bertoncello', 'Marchiori', 'Bortolotto', 'Bergamin',
+  'Toffolo', 'Baldan', 'Bertoldi', 'Michielon', 'Simionato', 'Trentin', 'Zago', 'Boscolo',
+  'Chinellato', 'Marcon', 'Rizzato', 'Sinigaglia', 'Peron', 'Salviato', 'Furlan', 'Fioravanzo',
+  'Pittarello', 'Scapin', 'Pellizzari', 'Danieli', 'Bordignon', 'Zanotto', 'Callegaro', 'Balestro',
+  'Girotto', 'Munaretto', 'Manente', 'Comelli', 'Marchetto', 'Bearzi', 'Zuliani', 'Tondat',
+  'Sedran', 'Bragagnolo', 'Bertoia', 'Marinig', 'Persello', 'Cargnelutti', 'Pittana', 'Cecotti',
+  'Copetti', 'Toffoli', 'Mainardis', 'Bertossi', 'Isetti', 'Podestà', 'Semino', 'Boragine',
+  'Delfino', 'Baccino', 'Devoto', 'Prevosto', 'Ratto', 'Rebora', 'Bacigalupo', 'Ottonello',
+  'Trucco', 'Ferrando', 'Bruzzone', 'Traverso', 'Piombo', 'Gandolfo', 'Massone', 'Isola',
+  'Odone', 'Descalzo', 'Barla', 'Robello', 'Ghirardini', 'Nannetti', 'Zaccaria', 'Gardini',
+  'Zanotti', 'Ravaglia', 'Baldazzi', 'Gozzi', 'Bertozzi', 'Amadei', 'Balboni', 'Zavatta',
+  'Foschi', 'Casali', 'Golinelli', 'Mazzoni', 'Bernabei', 'Turci', 'Zoli', 'Baldassarri',
+  'Vandini', 'Melandri', 'Casadio', 'Bettini', 'Fanti', 'Ghinelli', 'Baroncini', 'Gardelli',
+  'Bacci', 'Bencini', 'Bertelli', 'Cioni', 'Pellegrino', 'Ceccherini', 'Bartoletti', 'Landucci',
+  'Bandini', 'Vannucci', 'Del Freo', 'Guasti', 'Cresci', 'Betti', 'Chellini', 'Fanucci',
+  'Pieraccioni', 'Buti', 'Cencioni', 'Vestri', 'Torrini', 'Bagnoli', 'Ricasoli', 'Falorni',
+  'Chiti', 'Bini', 'Nesi', 'Baldacci', 'Innocenti', 'Salvadori', 'Bertacca', 'Del Sarto',
+  'Ansideri', 'Brozzetti', 'Cecchetti', 'Properzi', 'Gambelunghe', 'Bartoccioni', 'Mencarelli', 'Passeri',
+  'Bracalenti', 'Bordoni', 'Marcucci', 'Ottaviani', 'Servili', 'Compagnucci', 'Torelli', 'Frenguelli',
+  'Boccanera', 'Angelucci', 'Proietti', 'Piergentili', 'Camilli', 'Ciarrocchi', 'Bassetti', 'Bevilacqua',
+  'Cencelli', 'Nardone', 'Rufo', 'Mancuso', 'De Sanctis', 'Vinci', 'Onori', 'Marziali',
+  'Antonelli', 'Ceccacci', 'Iannetti', 'Falconi', 'Bertarelli', 'Improta', 'Ferraiolo', 'Cammarota',
+  'Iovine', 'Iannaccone', 'De Simone', 'Amitrano', 'D\'Auria', 'Buonocore', 'Aiello', 'Petrone',
+  'Formisano', 'Autiero', 'Del Prete', 'Malafronte', 'Auriemma', 'Tafuri', 'Fusaro', 'Iaccarino',
+  'Terracciano', 'Cavaliere', 'Baldascino', 'Attanasio', 'Vitiello', 'Petraglia', 'Sepe', 'Palma',
+  'Cangiano', 'Volpe', 'Cerbone', 'Palumbo', 'Loiacono', 'De Bellis', 'Semeraro', 'Legrottaglie',
+  'Convertino', 'Distante', 'Palasciano', 'Latagliata', 'De Nicolo', 'Fasano', 'Chieppa', 'Miccoli',
+  'Losito', 'Buonsanto', 'Lopane', 'Zizzi', 'Diliberto', 'Cofano', 'Argentiero', 'Grimaldi',
+  'Lattanzio', 'Sciacovelli', 'Digregorio', 'Palmisano', 'Frascella', 'Camposeo', 'Chiaravalloti', 'Talarico',
+  'Muraca', 'Falduto', 'Zangari', 'Mazzei', 'Scarcella', 'Ferrazzo', 'Larosa', 'Gullo',
+  'Mollo', 'Perri', 'Bagnato', 'Guzzo', 'Barletta', 'Foderaro', 'Barbalace', 'Naccarato',
+  'Filippelli', 'Serrao', 'Politi', 'Panzarella', 'Costantino', 'Scaramuzzino', 'Muto', 'Salatino',
+  'Cusimano', 'Randazzo', 'Bonanno', 'Lo Bianco', 'Marchese', 'Culotta', 'Ingrassia', 'Ferruzza',
+  'Zappulla', 'Salemi', 'Tumminello', 'Sciarrino', 'Scarpinato', 'Calì', 'Balsamo', 'Vinciguerra',
+  'Fragapane', 'Butera', 'La Rosa', 'Muscato', 'Sciortino', 'Vasta', 'Costanzo', 'Adamo',
+  'Amenta', 'Cusenza', 'Farruggia', 'Vaccaro', 'Bellofiore', 'Cascio', 'Sinatra', 'Rugolo',
+  'Currò', 'Tuttolomondo', 'Zarcone', 'Militello', 'Nicastro', 'Purrello', 'Pinna', 'Deiana',
+  'Cossu', 'Manca', 'Fadda', 'Angius', 'Loi', 'Puddu', 'Mura', 'Pili',
+  'Porcu', 'Pisano', 'Farci', 'Concas', 'Casula', 'Pitzalis', 'Corda', 'Marras',
+  'Contu', 'Pau', 'Corrias', 'Zucca', 'Delogu', 'Frau', 'Piga', 'Carta',
+  'Ledda', 'Muntoni', 'Onnis', 'Cadeddu', 'Todde', 'Loddo', 'Aru', 'Mereu',
+  'Sini', 'Spanu', 'Serpi', 'Are', 'Boi', 'Diana', 'Sedda', 'Zurru',
+  'Uda', 'Steri', 'Cabras', 'Argiolas', 'Locci', 'Pisu', 'Erre', 'De Grandis',
+  'De Paoli', 'De Rossi', 'De Filippis', 'De Martino', 'De Palma', 'De Franceschi', 'De Giorgi', 'De Vito',
+  'De Pasquale', 'De Bernardi', 'De Rienzo', 'De Feo', 'De Cristofaro', 'De Caro', 'De Notaris', 'De Mattia',
+  'De Nardis', 'De Padova', 'De Rango', 'De Franco', 'De Bonis', 'De Iuliis', 'De Vivo', 'Di Maria',
+  'Di Vaio', 'Di Natale', 'Di Francesco', 'Di Placido', 'Di Biagio', 'Di Livio', 'Di Renzo', 'Di Mauro',
+  'Di Nunzio', 'Di Tommaso', 'Di Vito', 'Di Bartolomeo', 'Di Cesare', 'Di Iorio', 'Di Stasio', 'Di Fabio',
+  'Agostini', 'Alberti', 'Amadori', 'Angelini', 'Antonini', 'Baldi', 'Barigazzi', 'Battaglia',
+  'Boninsegna', 'Bruschi', 'Buratti', 'Calabria', 'Calderone', 'Campanella', 'Cantarelli', 'Capra',
+  'Carboni', 'Carrozza', 'Cattani', 'Cavalieri', 'Cazzato', 'Celentano', 'Cerri', 'Chiodi',
+  'Cipolla', 'Colletti', 'Corbetta', 'Corradi', 'Damiano', 'De Marchi', 'Della Rovere', 'Dell\'Aquila',
+  'Di Bella', 'Di Bernardo', 'Di Cosmo', 'Di Domenico', 'Di Franco', 'Di Gennaro', 'Di Giovanni', 'Di Matteo',
+  'Di Meo', 'Di Michele', 'Di Napoli', 'Donadel', 'Fantoni', 'Faraone', 'Farnesi', 'Favaro',
+  'Ferretto', 'Filippi', 'Fioravanti', 'Foti', 'Fracasso', 'Fraschetti', 'Frigo', 'Gaggero',
+  'Galimberti', 'Gambetta', 'Garofalo', 'Gasparotto', 'Gavazzi', 'Gelmini', 'Genovese', 'Ghezzi',
+  'Giachetti', 'Giannetti', 'Gigli', 'Giulianelli', 'Grimani', 'Guarnieri', 'Guerrieri', 'Iori',
+  'Landini', 'Lanzafame', 'Liuzzi', 'Lonardi', 'Longobardi', 'Lucchesi', 'Maggi', 'Magrini',
+  'Manzo', 'Marangoni', 'Marcolini', 'Marengo', 'Marin', 'Massari', 'Mattioli', 'Menegatti',
+  'Menichetti', 'Miceli', 'Migliore', 'Minotti', 'Modica', 'Montani', 'Mosconi', 'Negro',
+  'Nencini', 'Nicoletti', 'Nobile', 'Oliva', 'Onofri', 'Ortolani', 'Padovani', 'Pagliari',
+  'Palazzo', 'Paltrinieri', 'Pandolfi', 'Panebianco', 'Pappalardo', 'Parenti', 'Pasetto', 'Pasquini',
+  'Pastorelli', 'Peluso', 'Perotti', 'Pezzella', 'Piccinini', 'Pietrangeli', 'Pirola', 'Pisapia',
+  'Pizzuto', 'Polastri', 'Ponzio', 'Portinari', 'Prati', 'Puccini', 'Quintavalle', 'Raimondo',
+  'Rapisarda', 'Rasi', 'Ravaioli', 'Renzetti', 'Ricciardo', 'Righetti', 'Rocchi', 'Rondelli',
+  'Rossignoli', 'Roveri', 'Sabatino', 'Salvato', 'Salvemini', 'Salvioni', 'Sammartino', 'Sansonetti',
+  'Santagata', 'Saraceno', 'Savoia', 'Scagliarini', 'Scalise', 'Scandurra', 'Scarano', 'Schiavone',
+  'Sciascia', 'Selvaggi', 'Serafino', 'Silvi', 'Simeone', 'Soldati', 'Sordi', 'Spadafora',
+  'Spinosa', 'Stangoni', 'Tacconi', 'Tagliavento', 'Tamborini', 'Tancredi', 'Tarasco', 'Tassinari',
+  'Terragni', 'Tiraboschi', 'Toldo', 'Tommasi', 'Torresi', 'Toschi', 'Trombini', 'Ugolotti',
+  'Urbani', 'Valeri', 'Varotto', 'Vecchione', 'Verdone', 'Vezzali', 'Vicini', 'Vidali',
+  'Zambon', 'Zanoli', 'Zecchin', 'Zenoni', 'Zonta', 'Abruzzese', 'Acerbi', 'Adornato',
+  'Agosti', 'Albano', 'Alessi', 'Amoretti', 'Andreoli', 'Ansaldi', 'Arrighi', 'Ascoli',
+  'Balestra', 'Balzano', 'Barbagallo', 'Barbato', 'Baruffi', 'Basili', 'Bassini', 'Battara',
+  'Bazzani', 'Belardi', 'Bellandi', 'Bellucci', 'Beltrami', 'Benatti', 'Benini', 'Berlingeri',
+  'Bertacchi', 'Bertacchini', 'Bertagna', 'Biagi', 'Bianchin', 'Bindi', 'Boarini', 'Bocca',
+  'Bolognesi', 'Bonavita', 'Bonfanti', 'Bonfiglio', 'Boninfante', 'Bonizzoni', 'Borrini', 'Bortoletto',
+  'Bovo', 'Bozzi', 'Bragagni', 'Brancati', 'Bregoli', 'Brenna', 'Brienza', 'Brollo',
+  'Brugnoli', 'Bruzzese', 'Buzzi', 'Calamai', 'Calcagni', 'Calderaro', 'Calligaris', 'Camiletti',
+  'Campisi', 'Canova', 'Cantoro', 'Capaldo', 'Capobianco', 'Cappelli', 'Cappellini', 'Cardone',
+  'Carfagna', 'Carnevale', 'Carraro', 'Casari', 'Cassese', 'Cassinelli', 'Castagna', 'Castellani',
+  'Castiello', 'Cataldi', 'Cavaciuti', 'Cazzulo', 'Ceccato', 'Cecere', 'Cellini', 'Cencetti',
+  'Ceresa', 'Chiarella', 'Chiodini', 'Ciampa', 'Ciavatta', 'Cimino', 'Ciriaco', 'Coco',
+  'Colonnese', 'Comotti', 'Condello', 'Coniglio', 'Conforti', 'Cordani', 'Corsini', 'Cossiga',
+  'Cotroneo', 'Crescenzo', 'Crocetti', 'D\'Elia', 'D\'Errico', 'D\'Onofrio', 'D\'Orazio', 'Dagostino',
+  'Dallavalle', 'Dattilo', 'De Bernardo', 'De Blasi', 'De Chirico', 'De Concini', 'De Falco', 'De Gasperi',
+  'De Gennaro', 'De Ieso', 'De Lisi', 'De Meo', 'De Micheli', 'De Muro', 'De Riso', 'De Rubertis',
+  'De Rugeriis', 'De Salvo', 'De Toni', 'De Vecchi', 'Del Frate', 'Del Zotto', 'Delfini', 'Dell\'Anna',
+  'Dell\'Orco', 'Dell\'Utri', 'Dellavalle', 'Diodato', 'Dolcini', 'Domenici', 'Domenichini', 'Dossena',
+  'Dragoni', 'Duranti', 'Emiliani', 'Facco', 'Faggioli', 'Falchi', 'Falconieri', 'Faraldi',
+  'Farolfi', 'Favretto', 'Fedeli', 'Felici', 'Feola', 'Ferrarese', 'Ferrarini', 'Fierro',
+  'Filice', 'Fioriti', 'Fogli', 'Fontanella', 'Forlin', 'Fornaro', 'Franceschini', 'Frascati',
+  'Frattini', 'Frizzi', 'Furini', 'Gagliani', 'Gagliardo', 'Gallucci', 'Gambardella', 'Ganci',
+  'Gasparri', 'Gaudino', 'Gazzola', 'Genesio', 'Ghirelli', 'Giacomini', 'Giampaolo', 'Gioffrè',
+  'Giudice', 'Giuliani', 'Giusti', 'Golini', 'Governatori', 'Grassano', 'Graziani', 'Greggio',
+  'Griffini', 'Grillo', 'Grotti', 'Guaraldi', 'Gualtieri', 'Guerrera', 'Guidone', 'Ianniello',
+  'Iavarone', 'Imbriani', 'Impastato', 'Indelicato', 'Iurato', 'Labate', 'Lamberti', 'Lancellotti',
+  'Lanfranchi', 'Lardieri', 'Laterza', 'Leonetti', 'Lippolis', 'Lo Cascio', 'Lo Presti', 'Lo Verde',
+  'Loffredo', 'Lo Vecchio', 'Lucchetti', 'Maccioni', 'Macri', 'Maglione', 'Mainetti', 'Malaspina',
+  'Mancinelli', 'Manfroi', 'Maniscalco', 'Manti', 'Marano', 'Marchionni', 'Marcotti', 'Mariotti',
+  'Martoni', 'Masotti', 'Massimino', 'Mastroianni', 'Mazzarella', 'Mazzocca', 'Menghini', 'Merenda',
+  'Meschini', 'Micheletti', 'Milanesi', 'Mingozzi', 'Miserendino', 'Modugno', 'Monachesi', 'Moncada',
+  'Mondadori', 'Montano', 'Morelli', 'Muzzi', 'Naldi', 'Nania', 'Natale', 'Necci',
+  'Nervi', 'Nespoli', 'Nunziata', 'Nuti', 'Occhipinti', 'Odorizzi', 'Oliveri', 'Ombra',
+  'Orfei', 'Orlando', 'Padula', 'Palmerini', 'Palozzi', 'Pantaleo', 'Papale', 'Papi',
+  'Pasotti', 'Passalacqua', 'Patrizi', 'Pavone', 'Pedrazzoli', 'Pellicano', 'Perina', 'Perricone',
+  'Petralia', 'Petrelli', 'Petrosino', 'Piacentini', 'Piantanida', 'Piazzi', 'Pignataro', 'Pinelli',
+  'Piombino', 'Pitasi', 'Placido', 'Plebani', 'Poddighe', 'Pollastri', 'Portoghese', 'Pratissoli',
+  'Priolo', 'Provenzano', 'Puce', 'Quadrelli', 'Raggi', 'Ramondino', 'Ranaldi', 'Ricchiuti',
+  'Rigamonti', 'Riondino', 'Rizzuto', 'Romeo', 'Rondinelli', 'Rosolino', 'Rovatti', 'Ruocco',
+  'Ruta', 'Saccà', 'Salinas', 'Salzano', 'Sanfilippo', 'Santese', 'Sardo', 'Savastano',
+  'Scaduto', 'Scalzo', 'Scaravilli', 'Scardino', 'Schiavo', 'Sciarrone', 'Sebastiani', 'Selvatico',
+  'Sensi', 'Serpico', 'Sestito', 'Severini', 'Sferrazza', 'Sigismondi', 'Simonetti', 'Sisti',
+  'Sorbi', 'Spadoni', 'Spampinato', 'Spina', 'Squillace', 'Staccioli', 'Stagno', 'Stellato',
+  'Stivala', 'Strada', 'Strambi', 'Strinati', 'Tabacchi', 'Tabaro', 'Tafuro', 'Taibi',
+  'Talenti', 'Talia', 'Tarabini', 'Tarsia', 'Tasso', 'Tavolaro', 'Tedaldi', 'Teodori',
+  'Terraneo', 'Testolina', 'Timpano', 'Tinti', 'Tirelli', 'Toffanin', 'Toffano', 'Toma',
+  'Tomassini', 'Tonello', 'Toniolo', 'Torretta', 'Tortora', 'Toscani', 'Tozzi', 'Tramontano',
+  'Trapasso', 'Traversi', 'Tremonti', 'Trevisano', 'Trigilio', 'Tripaldi', 'Troilo', 'Trotta',
+  'Tucci', 'Turi', 'Vaira', 'Valente', 'Vallesi', 'Vannoni', 'Varacalli', 'Ventrone',
+  'Vercelli', 'Verrastro', 'Vetrano', 'Vezzoso', 'Vidoni', 'Vigato', 'Vigevani', 'Voltan',
+  'Zaccagnini', 'Zaccheo', 'Zambotti', 'Zampini', 'Zanata', 'Zangrandi', 'Zaninetti', 'Zannier',
+  'Zappaterra', 'Zappoli', 'Zerboni', 'Zoccarato', 'Zola', 'Zoncada', 'Zucchelli', 'Zucchi',
+  'Abbatantuono', 'Baglioni', 'Cocciante', 'Ramazzotti', 'Pausini', 'Venditti', 'Battiato', 'Consoli',
+  'Cremonini', 'Ligabue', 'Renga', 'Silvestrin', 'Baccini', 'Cherubini', 'Pezzali', 'Guccini',
+  'Masini', 'Letta', 'Bersani', 'Casini', 'Fini', 'Bossi', 'Formigoni'
 ];
 
 // --- NOMI STRANIERI (giocatori non italiani) ---
@@ -633,8 +657,17 @@ function randomForeignClub(nationality) {
 // le squadre di B/C non possono comprarne, ma una squadra retrocessa da A
 // mantiene quelli che ha già (nessuna rimozione forzata da nessuna parte).
 const FOREIGN_ROSTER_CAP = 3;
+// Conta anche gli stranieri di PROPRIETÀ ma attualmente in prestito altrove
+// (§ bug segnalato dall'utente: mentre un giocatore straniero è in prestito
+// fuori, esce da team.roster e "libera" uno slot — la squadra poteva quindi
+// firmarne un altro, e al rientro del prestito ritrovarsi con più di 3
+// stranieri insieme). Lo slot resta riservato per tutta la durata del
+// prestito: il tetto riguarda quanti stranieri il club ha in ROSA (di
+// proprietà), non quanti ne schiera fisicamente oggi.
 function countForeignPlayers(team) {
-  return (team.roster || []).filter(p => p.nationality !== 'IT').length;
+  const owned = (team.roster || []).filter(p => p.nationality !== 'IT').length;
+  const loanedOutForeign = activeLoans.filter(l => l.homeTeam === team && l.player.nationality !== 'IT').length;
+  return owned + loanedOutForeign;
 }
 function canBuyForeignPlayer(team) {
   return team.leagueLevel === 'A' && countForeignPlayers(team) < FOREIGN_ROSTER_CAP;
@@ -1445,6 +1478,32 @@ function pickFormationPair() {
   return Math.random() < 0.5 ? [pair[0], pair[1]] : [pair[1], pair[0]];
 }
 
+// Moduli ammessi per Il Catenacciaro/L'Offensivo (§ discussione esplicita con
+// l'utente): non ha senso un Catenacciaro che schiera un 3-4-3 o un 4-2-4
+// (attacco puro), né un Offensivo che schiera un 4-5-1 o un 5-3-2 (blindato).
+// Due moduli (4-1-2-1-2, 4-3-2-1) sono ammessi per ENTRAMBE le personalità —
+// equilibrati ma non troppo per essere esclusi del tutto. Il resto (3-5-2,
+// 3-1-4-2, 3-4-1-2) resta escluso da entrambe: nessuna delle due personalità
+// li sceglierà mai come modulo preferito, restano disponibili per tutti gli
+// altri allenatori (con o senza personalità diversa da queste due).
+const CATENACCIARO_FORMATIONS = ['4-4-2', '5-3-2', '4-5-1', '5-1-2-2', '5-2-2-1', '5-4-1', '5-1-3-1', '4-1-2-1-2', '4-3-2-1'];
+const OFFENSIVO_FORMATIONS = ['4-2-4', '3-4-3', '4-2-2-2', '4-2-1-3', '4-1-2-3', '4-3-3', '3-4-2-1', '4-1-2-1-2', '4-3-2-1'];
+
+// Come pickFormationPair, ma filtrata sui moduli ammessi per la personalità
+// dell'allenatore — per chiunque non sia Catenacciaro/Offensivo si comporta
+// esattamente come pickFormationPair (nessuna restrizione).
+function pickFormationPairForPersonality(personalityType) {
+  const allowed = personalityType === 'Il Catenacciaro' ? CATENACCIARO_FORMATIONS
+    : personalityType === "L'Offensivo" ? OFFENSIVO_FORMATIONS
+      : null;
+  if (!allowed) return pickFormationPair();
+  const allowedSet = new Set(allowed);
+  const eligiblePairs = FORMATION_PAIRS.filter(([a, b]) => allowedSet.has(a) && allowedSet.has(b));
+  if (!eligiblePairs.length) return pickFormationPair(); // rete di sicurezza, non dovrebbe mai servire
+  const pair = eligiblePairs[Math.floor(Math.random() * eligiblePairs.length)];
+  return Math.random() < 0.5 ? [pair[0], pair[1]] : [pair[1], pair[0]];
+}
+
 // Nomi leggibili dei ruoli, in ordine di reparto (per la UI: descrizione
 // modulo, schermata allenatore). POR escluso (è sempre 1, mai indicato).
 const ROLE_LABELS = {
@@ -1540,18 +1599,264 @@ function staffOverqualified(strength, leagueLevel) {
   return staffTierForStrength(strength) > LEAGUE_STAFF_TIER[leagueLevel];
 }
 
+// ─── PERSONALITÀ DELL'ALLENATORE (§ discussione esplicita con l'utente) ───────
+// 8 archetipi, assegnati a OGNI allenatore creato (CPU o assumibile
+// dall'umano dal mercato — a differenza del DS, qui non c'è un'esclusione per
+// il player: l'allenatore è staff che si assume, non un alter ego, quindi
+// sceglierne uno con una personalità precisa è una scelta tattica in più a
+// disposizione anche tua). bonusText/malusText sono la descrizione ESATTA
+// mostrata nella scheda (§ "lista dei bonus e malus nella scheda allenatore");
+// i numeri reali usati dal motore sono in getCoachRoleAgeFormaMult/
+// getCoachFitMult più sotto, tenuti volutamente separati dai dati per poterli
+// ritoccare senza toccare i testi (e viceversa).
+const COACH_PERSONALITIES = [
+  {
+    type: 'Il Catenacciaro',
+    description: 'Cura la fase difensiva sopra ogni cosa: squadre solide e poco spettacolari, che concedono pochissimo ma segnano con parsimonia.',
+    // Malus esteso a TRQ/ALA oltre all'ATT, POR escluso da bonus e malus (§
+    // discussione esplicita con l'utente: il portiere non è "reparto
+    // difensivo" nello stesso senso di difensori/terzini, resta neutro) e
+    // percentuale allineata al ±6% dell'Offensivo: nei moduli condivisi da
+    // entrambe le personalità (4-1-2-1-2, 4-3-2-1) il Catenacciaro schiera
+    // sempre 4 ruoli bonus (DIF/TER) e 3 malus (ATT/TRQ/ALA), l'Offensivo
+    // esattamente l'inverso (3 bonus, 4 malus) — usando la STESSA percentuale
+    // per entrambi l'effetto medio netto sulla squadra risulta quasi
+    // speculare (+0,55% contro -0,55%).
+    bonusText: 'Difensori e terzini schierati: +6% forza effettiva',
+    malusText: 'Trequartisti, ali e attaccanti schierati: −6%',
+  },
+  {
+    type: "L'Offensivo",
+    description: 'Spinge sull\'attacco sopra ogni cosa: squadre spettacolari che segnano molto, ma un po\' più fragili quando devono difendersi.',
+    // Vedi commento gemello su Il Catenacciaro: stesso ±6%, POR sempre
+    // neutro, i ruoli malus sono l'esatto specchio dei ruoli bonus del
+    // Catenacciaro (e viceversa), il che rende i due effetti medi netti
+    // sulla squadra quasi simmetrici nei moduli condivisi da entrambe le
+    // personalità.
+    bonusText: 'Trequartisti, ali e attaccanti schierati: +6% forza effettiva',
+    malusText: 'Difensori e terzini schierati: −6%',
+  },
+  {
+    type: 'Il Valorizzatore di Giovani',
+    description: 'Punta sui giovani e li responsabilizza: rendono più della loro forza reale quando schierati, a scapito di un filo di esperienza.',
+    bonusText: 'Giocatori di 21 anni o meno schierati: +8% forza effettiva',
+    malusText: 'Giocatori di 30 anni o più schierati: −3%',
+  },
+  {
+    type: 'Il Tradizionalista',
+    description: 'Si fida solo dell\'esperienza: i veterani rendono al meglio con lui, un giovane lanciato prima del tempo ne risente parecchio.',
+    bonusText: 'Giocatori di 30 anni o più schierati: +6% forza effettiva',
+    malusText: 'Giocatori di 21 anni o meno schierati: −5%',
+  },
+  {
+    type: 'Il Rotazionista',
+    description: 'Gestisce le energie meglio di chiunque altro: chi scende in campo riposato rende ancora di più, chi è stanco paga caro.',
+    bonusText: 'Forma al 100%: ulteriore +5% forza effettiva',
+    malusText: 'Forma ≤99%: ulteriore −5% oltre al normale calo',
+  },
+  {
+    type: 'L\'Integralista Tattico',
+    description: 'Rigido e poco flessibile: premia solo gli specialisti di un unico ruolo schierati esattamente nella loro posizione (di più se sanno fare SOLO quella), punisce severamente chi (a ruolo unico) è costretto ad adattarsi. Chi ha doppio ruolo non gli interessa: per lui resta un allenatore come un altro.',
+    bonusText: '1 ruolo + 1 sola posizione: +5% extra · 1 ruolo + entrambe le posizioni: +2,5% extra',
+    malusText: 'Giocatore a ruolo unico fuori posizione: −8% (invece del −5% standard) · fuori ruolo: −18% (invece del −10% standard)',
+  },
+  {
+    type: 'Lo Sperimentatore',
+    description: 'Flessibile e versatile: si adatta a qualunque disposizione senza troppi patemi, ma non ottiene mai il massimo da nessuno schema.',
+    bonusText: 'Nessun bonus extra da posizione perfetta (resta neutro)',
+    malusText: 'Fuori posizione: solo −2,5% (dimezzato) · Fuori ruolo: solo −5% (dimezzato)',
+  },
+  {
+    type: 'Il Trascinatore',
+    description: 'Tira fuori il massimo da tutti, senza distinzione di ruolo: prestazioni sopra le righe, ma la squadra si logora più in fretta.',
+    bonusText: 'Bonus di forza per TUTTI i titolari schierati: +4%',
+    malusText: 'Calo di forma raddoppiato a ogni partita giocata (−2% invece di −1%)',
+  },
+];
+function randomCoachPersonality() {
+  return { ...COACH_PERSONALITIES[Math.floor(Math.random() * COACH_PERSONALITIES.length)] };
+}
+
+// Moltiplicatore da ruolo/età/forma per il personaggio dell'allenatore — si
+// applica SEMPRE, indipendentemente dal fit di posizione (che ha invece il
+// suo moltiplicatore separato, vedi getCoachFitMult). Ritorna 1 (nessun
+// effetto) se l'allenatore non ha personalità — così ogni chiamante resta
+// sicuro anche per un `coach` null/undefined o senza tratto assegnato.
+// entryRole (§ bug segnalato dall'utente): un giocatore con doppio ruolo ha
+// UN SOLO player.role "fisso" (il primario), ma può scendere in campo nel
+// suo ruolo SECONDARIO in questo specifico slot di formazione — il bonus/
+// malus di ruolo (Catenacciaro/Offensivo) deve guardare il ruolo che sta
+// DAVVERO giocando ora, non quello anagrafico fisso, altrimenti risultava
+// (o mancava) a sproposito ogni volta che getBest11 lo schierava nel
+// secondario. Facoltativo e retro-compatibile: se omesso, ricade su
+// player.role come prima (nessuna differenza per i chiamanti esistenti che
+// non hanno ancora questo contesto).
+function getCoachRoleAgeFormaMult(player, coach, entryRole) {
+  const type = coach?.personality?.type;
+  if (!type) return 1;
+  const role = entryRole || player.role;
+  switch (type) {
+    case 'Il Catenacciaro':
+      // POR escluso da bonus e malus (§ commento in COACH_PERSONALITIES: resta
+      // sempre neutro, non è "reparto difensivo" nello stesso senso di DIF/TER).
+      if (role === 'DIF' || role === 'TER') return 1.06;
+      // Malus esteso a TRQ/ALA oltre ad ATT: nei moduli condivisi con
+      // L'Offensivo questi sono esattamente i ruoli che quella personalità
+      // bonifica — un mirror esatto.
+      if (role === 'ATT' || role === 'TRQ' || role === 'ALA') return 0.94;
+      return 1;
+    case "L'Offensivo":
+      if (role === 'ATT' || role === 'ALA' || role === 'TRQ') return 1.06;
+      if (role === 'DIF' || role === 'TER') return 0.94;
+      return 1;
+    case 'Il Valorizzatore di Giovani':
+      if (player.age <= 21) return 1.08;
+      if (player.age >= 30) return 0.97;
+      return 1;
+    case 'Il Tradizionalista':
+      if (player.age >= 30) return 1.06;
+      if (player.age <= 21) return 0.95;
+      return 1;
+    case 'Il Rotazionista': {
+      const forma = getForma(player);
+      // Soglia alzata da ≥85 a ===FORMA_MAX (§ segnalato dall'utente: con
+      // −1/partita e +5/riposo, ≥85 era quasi sempre vero per chiunque venisse
+      // fatto riposare anche solo ogni tanto, rendendo il bonus quasi gratis
+      // e questa personalità nettamente più forte delle altre in un torneo di
+      // verifica — ora serve la forma piena, non "quasi piena".
+      if (forma >= FORMA_MAX) return 1.05;
+      // Malus ridisegnato (§ richiesta esplicita dell'utente, dopo <60/<90/
+      // <95): non più una soglia bassa con caduta ripida (-8%), ma un malus
+      // leggero (-5%) su QUALUNQUE forma non piena — bonus e malus diventano
+      // le due facce della stessa medaglia, "100% o niente".
+      if (forma <= 99) return 0.95;
+      return 1;
+    }
+    case 'Il Trascinatore':
+      return 1.04;
+    default:
+      return 1; // Integralista/Sperimentatore agiscono solo su getCoachFitMult
+  }
+}
+
+// Moltiplicatore di fit (posizione/ruolo) per il personaggio dell'allenatore —
+// SOSTITUISCE FIT_STRENGTH_MULT[fit] (non si somma), perché queste due
+// personalità ridefiniscono direttamente quanto costa/rende l'adattamento,
+// invece di aggiungere un bonus indipendente. Per chi non ha una di queste
+// due personalità (o non ha personalità affatto), ritorna lo stesso valore
+// standard di sempre — zero differenza per ogni chiamante esistente.
+//
+// L'Integralista Tattico premia/punisce SOLO gli specialisti a ruolo unico
+// (§ richiesta esplicita dell'utente, dopo il bug fix doppio ruolo: prima
+// premiava/puniva chiunque allo stesso modo, rendendolo troppo forte). Un
+// giocatore con doppio ruolo schierato in uno dei suoi due ruoli è per
+// definizione "flessibile", non uno scarto tattico né un incastro perfetto:
+// per lui l'Integralista si comporta come un allenatore senza personalità
+// (FIT_STRENGTH_MULT standard), sia per il bonus (niente +2.5%/+5%) sia per
+// il malus (niente -8%/-18%, resta il -5%/-10% di chiunque altro). Tra gli
+// specialisti a ruolo unico, il bonus di posizione ha due livelli (§ altra
+// richiesta esplicita): chi sa giocare SOLO la posizione richiesta (1 ruolo
+// + 1 posizione, incastro perfetto senza alternative) prende il massimo
+// +5%; chi nel suo unico ruolo copre entrambe le posizioni (1 ruolo + 2
+// posizioni, più versatile ma meno "puro") prende solo +2.5%. Il portiere
+// non ha sottoposizioni (ROLE_POSITIONS.POR è vuoto): per lui non c'è mai
+// adattamento possibile, quindi conta come "1 posizione" e prende il +5%.
+function getCoachFitMult(coach, fit, player, role) {
+  const type = coach?.personality?.type;
+  const isSingleRole = !player || getPlayerRoles(player).length === 1;
+  if (type === 'L\'Integralista Tattico') {
+    if (!isSingleRole) return FIT_STRENGTH_MULT[fit];
+    if (fit === 'position') {
+      const posCount = (player && role) ? (playerPositionsFor(player, role).length || 1) : 1;
+      return posCount === 1 ? 1.05 : 1.025;
+    }
+    if (fit === 'outOfPosition') return 0.92;
+    if (fit === 'outOfRole') return 0.82;
+  }
+  if (type === 'Lo Sperimentatore') {
+    if (fit === 'position') return 1.0;
+    if (fit === 'outOfPosition') return 0.975;
+    if (fit === 'outOfRole') return 0.95;
+  }
+  return FIT_STRENGTH_MULT[fit];
+}
+
+// Badge compatto per la personalità di un allenatore: tooltip con
+// descrizione+bonus/malus (§ condiviso da tab Panchina e finestra partita,
+// promosso da funzione locale a top-level per riuso — stesso testo ovunque).
+function coachPersonalityBadgeHtml(c) {
+  if (!c || !c.personality) return '';
+  const p = c.personality;
+  const tooltip = `${p.description}${p.bonusText ? ` | ▲ ${p.bonusText}` : ''}${p.malusText ? ` | ▼ ${p.malusText}` : ''}`;
+  return `<span class="mm-badge" style="cursor:help" title="${tooltip.replace(/"/g, '&quot;')}">🎭 ${p.type}</span>`;
+}
+
 function createCoach(team) {
   const firstName = ITALIAN_FIRST_NAMES[Math.floor(Math.random() * ITALIAN_FIRST_NAMES.length)];
   const lastName = ITALIAN_LAST_NAMES[Math.floor(Math.random() * ITALIAN_LAST_NAMES.length)];
   const age = 38 + Math.floor(Math.random() * 20);
   const strength = randomStaffStrengthForLeague(team.leagueLevel);
   const maxStrength = Math.min(100, strength + 10 + Math.floor(Math.random() * 35)); // +10 a +45
+  // Personalità PRIMA dei moduli: Catenacciaro/Offensivo pescano solo dai
+  // moduli tatticamente coerenti con loro (vedi pickFormationPairForPersonality).
+  const personality = randomCoachPersonality();
   // 2 moduli preferiti (non più 1 fisso): quello effettivamente schierato si
   // decide partita per partita/stagione in base alla rosa (pickActiveFormation).
-  const formations = pickFormationPair();
-  const coach = { firstName, lastName, age, strength, maxStrength, formations, history: [] };
+  const formations = pickFormationPairForPersonality(personality.type);
+  const coach = { firstName, lastName, age, strength, maxStrength, formations, history: [], personality };
   coach.contract = createCoachContract(coach, 2 + Math.floor(Math.random() * 3)); // 2-4 anni
   return coach;
+}
+
+// ─── PERSONALITÀ DEL DS (§ discussione esplicita con l'utente) ────────────────
+// 7 archetipi, assegnati SOLO ai DS CPU (mai al DS del player, che resta senza
+// personalità — vedi randomDsPersonality e i suoi punti di chiamata). Ogni
+// tratto (0-100) alimenta getDsProfile esattamente come i tratti individuali
+// già previsti dal gancio esistente (ambition/patience/youthFocus) più un
+// quarto tratto, churnBias, che modula quanto un DS è propenso a pagare una
+// buonuscita pur di smuovere un giocatore (vedi buyoutTolerance in
+// getMarketTurnOptions) — necessario perché Rottamatore/Fedelissimo si
+// distinguono proprio e SOLO su questo asse, non su ambizione/pazienza/
+// giovani, dove risulterebbero quasi indistinguibili.
+const DS_PERSONALITIES = [
+  {
+    type: 'Il Costruttore',
+    description: 'Investe sul vivaio e sui prospetti, paziente: aspetta che un giovane maturi invece di cercare sempre soluzioni immediate sul mercato.',
+    ambition: 35, patience: 85, youthFocus: 90, churnBias: 25,
+  },
+  {
+    type: 'Lo Squalo',
+    description: 'Insegue sempre il colpo grosso, anche senza un bisogno reale: spende volentieri, non lascia mai il budget fermo a lungo.',
+    ambition: 90, patience: 25, youthFocus: 25, churnBias: 55,
+  },
+  {
+    type: 'Il Contabile',
+    description: 'Prudente fino alla paranoia: preferisce l\'occasione a costo zero al colpo costoso, anche con la cassa piena e il progetto ambizioso.',
+    ambition: 15, patience: 60, youthFocus: 45, churnBias: 20,
+  },
+  {
+    type: 'Il Rottamatore',
+    description: 'Rosa sempre in movimento: vende, presta, sostituisce di continuo — raramente si affeziona a un giocatore, anche se rende bene.',
+    ambition: 55, patience: 30, youthFocus: 50, churnBias: 90,
+  },
+  {
+    type: 'Il Fedelissimo',
+    description: 'Tiene il gruppo unito il più possibile: riluttante a cedere anche gli esuberi, evita le buonuscite anticipate per lealtà alla rosa.',
+    ambition: 45, patience: 70, youthFocus: 45, churnBias: 10,
+  },
+  {
+    type: 'Il Talent Scout',
+    description: 'Vive di scommesse sui giovani: preferisce sempre il prospetto con margine di crescita al giocatore pronto, anche a rischio nell\'immediato.',
+    ambition: 40, patience: 80, youthFocus: 95, churnBias: 45,
+  },
+  {
+    type: 'Il Negoziatore Freddo',
+    description: 'Non si fa mai prendere dalla fretta: aspetta il momento giusto, raramente sovrapaga, spesso lascia sfumare un obiettivo piuttosto che cedere.',
+    ambition: 25, patience: 75, youthFocus: 50, churnBias: 35,
+  },
+];
+function randomDsPersonality() {
+  return { ...DS_PERSONALITIES[Math.floor(Math.random() * DS_PERSONALITIES.length)] };
 }
 
 function createDirector(team) {
@@ -1560,7 +1865,7 @@ function createDirector(team) {
   const age = 38 + Math.floor(Math.random() * 20);
   const strength = randomStaffStrengthForLeague(team.leagueLevel);
   const maxStrength = Math.min(100, strength + 10 + Math.floor(Math.random() * 35)); // +10 a +45
-  const ds = { firstName, lastName, age, strength, maxStrength, history: [] };
+  const ds = { firstName, lastName, age, strength, maxStrength, history: [], personality: randomDsPersonality() };
   ds.contract = createDSContract(ds, 2 + Math.floor(Math.random() * 3)); // 2-4 anni
   return ds;
 }
@@ -1595,8 +1900,9 @@ function createFreeCoach() {
   const age = 38 + Math.floor(Math.random() * 20);
   const strength = generateFreeStaffStrength();
   const maxStrength = Math.min(100, strength + randomFreeStaffMaxOffset());
-  const formations = pickFormationPair();
-  return { firstName, lastName, age, strength, maxStrength, formations, history: [] };
+  const personality = randomCoachPersonality();
+  const formations = pickFormationPairForPersonality(personality.type);
+  return { firstName, lastName, age, strength, maxStrength, formations, history: [], personality };
 }
 function createFreeDirector() {
   const firstName = ITALIAN_FIRST_NAMES[Math.floor(Math.random() * ITALIAN_FIRST_NAMES.length)];
@@ -1604,7 +1910,7 @@ function createFreeDirector() {
   const age = 38 + Math.floor(Math.random() * 20);
   const strength = generateFreeStaffStrength();
   const maxStrength = Math.min(100, strength + randomFreeStaffMaxOffset());
-  return { firstName, lastName, age, strength, maxStrength, history: [] };
+  return { firstName, lastName, age, strength, maxStrength, history: [], personality: randomDsPersonality() };
 }
 
 // Ricambio periodico di staff MAI stato calciatore (a differenza di
@@ -1618,8 +1924,9 @@ function createEmergingCoach() {
   const age = 35 + Math.floor(Math.random() * 8); // 35-42
   const strength = generateFreeStaffStrength();
   const maxStrength = Math.min(100, strength + randomFreeStaffMaxOffset());
-  const formations = pickFormationPair();
-  return { firstName, lastName, age, strength, maxStrength, formations, history: [] };
+  const personality = randomCoachPersonality();
+  const formations = pickFormationPairForPersonality(personality.type);
+  return { firstName, lastName, age, strength, maxStrength, formations, history: [], personality };
 }
 function createEmergingDirector() {
   const firstName = ITALIAN_FIRST_NAMES[Math.floor(Math.random() * ITALIAN_FIRST_NAMES.length)];
@@ -1627,7 +1934,7 @@ function createEmergingDirector() {
   const age = 35 + Math.floor(Math.random() * 8); // 35-42
   const strength = generateFreeStaffStrength();
   const maxStrength = Math.min(100, strength + randomFreeStaffMaxOffset());
-  return { firstName, lastName, age, strength, maxStrength, history: [] };
+  return { firstName, lastName, age, strength, maxStrength, history: [], personality: randomDsPersonality() };
 }
 
 // Il presidente fissa budget trasferimenti e monte ingaggi; non gioca mai lui stesso
@@ -1714,7 +2021,22 @@ const FIT_STRENGTH_MULT = { position: 1, outOfPosition: 0.95, outOfRole: 0.90 };
 // squalificati e chi non è al meglio della condizione restano comunque
 // candidati validi, non vengono esclusi né penalizzati nel confronto.
 function getBest11(roster, formationName, opts) {
-  const strengthOf = opts && opts.ignoreForma ? (p => p.strength) : getPlayerEffectiveStrength;
+  const baseStrengthOf = opts && opts.ignoreForma ? (p => p.strength) : getPlayerEffectiveStrength;
+  // opts.coach (§ personalità dell'allenatore): quando presente, la SELEZIONE
+  // stessa tiene conto del bonus/malus di ruolo/età/forma — un Valorizzatore
+  // di Giovani può quindi scegliere un ventenne al posto di un trentenne di
+  // pari forza grezza, non solo mostrare un numero diverso a schieramento già
+  // deciso. Quando opts.coach è assente (la stragrande maggioranza delle
+  // chiamate: tiering, bisogni di rosa, valutazione trasferimenti) il
+  // comportamento resta IDENTICO a prima — nessuna personalità entra nelle
+  // decisioni strutturali di mercato, solo in quelle di formazione reale.
+  const coach = opts && opts.coach;
+  // strengthOf ora prende anche lo SLOT di ruolo che si sta valutando (§ bug
+  // segnalato dall'utente sui doppi ruoli: senza saperlo, il bonus/malus di
+  // ruolo del Catenacciaro/Offensivo guardava sempre p.role primario, mai il
+  // ruolo secondario quando è quello lo slot in valutazione).
+  const strengthOf = coach ? ((p, r) => baseStrengthOf(p) * getCoachRoleAgeFormaMult(p, coach, r)) : baseStrengthOf;
+  const fitMult = (fit, p) => coach ? getCoachFitMult(coach, fit, p) : FIT_STRENGTH_MULT[fit];
   const slots = { ...(FORMATIONS[formationName] || FORMATIONS['4-4-2']) };
   const result = [];
   const used = new Set();
@@ -1727,7 +2049,7 @@ function getBest11(roster, formationName, opts) {
     let needed = slots[role] || 0;
     const inRolePool = roster
       .filter(p => playerCanPlayRole(p, role) && !used.has(p.id))
-      .sort((a, b) => strengthOf(b) - strengthOf(a));
+      .sort((a, b) => strengthOf(b, role) - strengthOf(a, role));
 
     const rolePositions = ROLE_POSITIONS[role];
     if (!rolePositions || !rolePositions.length) {
@@ -1792,11 +2114,11 @@ function getBest11(roster, formationName, opts) {
         for (const p of chosen) {
           const type = assigned.get(p);
           if (posOf(p).includes(type)) continue; // già a suo agio, niente da migliorare
-          const misfitValue = strengthOf(p) * FIT_STRENGTH_MULT.outOfPosition;
+          const misfitValue = strengthOf(p, role) * fitMult('outOfPosition', p);
           const bestOutside = inRolePool
             .filter(q => !chosen.includes(q) && posOf(q).includes(type))
-            .sort((a, b) => strengthOf(b) - strengthOf(a))[0];
-          if (bestOutside && strengthOf(bestOutside) > misfitValue) {
+            .sort((a, b) => strengthOf(b, role) - strengthOf(a, role))[0];
+          if (bestOutside && strengthOf(bestOutside, role) > misfitValue) {
             chosen = chosen.filter(q => q !== p).concat(bestOutside);
             assigned = assignPositions(chosen);
             improved = true;
@@ -1823,7 +2145,7 @@ function getBest11(roster, formationName, opts) {
     if (!needed) continue;
     const pool = roster
       .filter(p => !used.has(p.id))
-      .sort((a, b) => strengthOf(b) - strengthOf(a));
+      .sort((a, b) => strengthOf(b, role) - strengthOf(a, role));
     for (const p of pool) {
       if (needed <= 0) break;
       result.push({ player: p, role, inPosition: false, fit: 'outOfRole' });
@@ -1880,7 +2202,34 @@ function pickActiveFormation(team) {
 // 3-4-3/3-4-2-1) è comunque un titolare/riserva vera, non un esubero — prima
 // veniva marcato fuori sistema tattico e rischiava lo svincolo solo perché
 // il modulo attivo in quel momento non aveva slot per lui.
+// Memo di getSquadTiers: è il vero centro di costo del mercato CPU (4 chiamate
+// a getBest11 ognuna) e viene interrogata a cascata da getSquadSurplus /
+// getTransferListedPlayers per OGNI venditore candidato, dentro un ciclo su
+// tutte le 60 squadre, per ogni turno di ogni giro (§20.7 dell'analisi).
+// La validità è verificata su (riferimento all'array roster + sua lunghezza +
+// riferimento all'array dei moduli): copre entrambi gli stili di mutazione
+// usati nel codice — `team.roster = team.roster.filter(...)` cambia il
+// riferimento, `team.roster.push(...)` ne cambia la lunghezza — e un cambio di
+// allenatore/modulo cambia il riferimento di team.coach.formations. La forza
+// dei giocatori non varia durante una sessione di mercato, e il tiering usa
+// comunque ignoreForma, quindi non ci sono altre sorgenti di invalidazione.
+const __squadTiersCache = new WeakMap();
+
 function getSquadTiers(team) {
+  const cached = __squadTiersCache.get(team);
+  if (cached && cached.roster === team.roster && cached.len === team.roster.length
+      && cached.formations === team.coach?.formations) {
+    return cached.value;
+  }
+  const value = computeSquadTiers(team);
+  __squadTiersCache.set(team, {
+    roster: team.roster, len: team.roster.length,
+    formations: team.coach?.formations, value,
+  });
+  return value;
+}
+
+function computeSquadTiers(team) {
   const formations = team.coach?.formations?.length ? team.coach.formations : [pickActiveFormation(team)];
   const starters = new Set();
   formations.forEach(formation => {
@@ -1902,6 +2251,317 @@ function getSquadSurplus(team) {
   if (!team.roster || team.roster.length <= 22) return [];
   const { starters, reserves } = getSquadTiers(team);
   return team.roster.filter(p => !starters.has(p) && !reserves.has(p));
+}
+
+// ─── PROFILO DECISIONALE DEL DS ───────────────────────────────────────────────
+// Punto UNICO di caratterizzazione del comportamento di mercato di una squadra:
+// tutto il resto della CPU (scoring dei bersagli, disciplina di spesa, rumore
+// decisionale, preferenza per i giovani) legge SOLO da qui.
+//
+// Oggi ogni tratto è DERIVATO da dati che esistono già (forza del DS, fascia-
+// obiettivo della squadra, generosità del presidente): non c'è ancora una
+// personalità esplicita del DS, quindi due DS di pari forza in club equivalenti
+// si comportano allo stesso modo. Quando esisterà `team.ds.personality`, basterà
+// farla confluire nel blocco marcato GANCIO qui sotto: nessun'altra funzione del
+// mercato va toccata.
+function getDsProfile(team) {
+  const dsStrength = team.ds?.strength ?? 50;
+  const tier = estimateObjectiveGlobalTier(team);        // 1 (C Salvezza) .. 12 (A Titolo)
+  const generosity = team.president?.personality?.generosity ?? 50;
+  const tierNorm = (tier - 1) / 11;                      // 0..1
+
+  // Quanto la squadra è REALMENTE outlier nella sua lega quest'anno (z-score
+  // medio forza/budget/piazzamento, vedi computePreseasonPrevisioni/
+  // setObjectives) — non solo la fascia testuale a 4 gradini. Due squadre
+  // entrambe "Titolo/top 3" (stesso tierNorm) ma con margini di dominio
+  // opposti (una domina di 12 punti di forza e 400M€, l'altra è prima per un
+  // soffio) devono comportarsi diversamente sul mercato. dominance è tipic-
+  // amente in un range ±2/±3 (z-score): lo si schiaccia a 0..1 per poterlo
+  // mescolare con tierNorm, con clamp sugli estremi rari.
+  const dominance = team.objective?.dominance ?? 0;
+  const dominanceNorm = Math.max(0, Math.min(1, (dominance + 2) / 4));
+
+  // Ambizione di mercato: quanto si punta al colpo grosso invece che
+  // all'occasione. Sale con la fascia-obiettivo, con QUANTO domini davvero la
+  // tua lega quest'anno, e con la generosità del presidente — chi ha un
+  // presidente tirchio non insegue i big nemmeno se sportivamente ambizioso.
+  const objectiveDrive = tierNorm * 0.5 + dominanceNorm * 0.5;
+  let ambition = Math.max(0, Math.min(1, objectiveDrive * 0.75 + generosity / 100 * 0.25));
+
+  // Peso del futuro: quanto conta la proiezione a 3 anni rispetto all'undici di
+  // oggi. Chi lotta per salvarsi non può permettersi di programmare, una big
+  // consolidata sì.
+  let futureWeight = 0.25 + tierNorm * 0.35;             // 0.25 .. 0.60
+
+  // Preferenza per i giovani: deliberatamente INVERSA al tier — i club piccoli
+  // vivono di vivaio e plusvalenze, le big comprano prodotti finiti.
+  let youthBias = 0.55 - tierNorm * 0.30;                // 0.55 .. 0.25
+
+  // Rumore decisionale: un DS forte sceglie davvero il miglior bersaglio, uno
+  // debole sbaglia il pick. La curva precedente — max(0,(60-ds)/60)×0.35 — si
+  // azzerava a DS 60, ma quasi tutti i DS titolari stanno fra 70 e 90: in
+  // pratica erano TUTTI perfetti e indistinguibili (osservato: rumore ±0% sia
+  // per un DS 86 sia per un DS 74). Ora la scala è continua su tutto il range,
+  // così la forza del DS discrimina davvero.
+  let riskNoise = (100 - dsStrength) / 100 * 0.45;   // 0.45 a DS 0 → 0 a DS 100
+
+  // Secondo asse di competenza, indipendente dal rumore: quanti bersagli il DS
+  // riesce davvero a mettere sotto osservazione. Un DS scarso non solo sceglie
+  // peggio fra i candidati, ne vede proprio di meno — e le occasioni che non
+  // guarda non può coglierle.
+  const scoutingWidth = Math.round(8 + dsStrength / 100 * 14);   // 8 a DS 0 → 22 a DS 100
+
+  // ── PERSONALITÀ DEL DS (§ discussione esplicita con l'utente) ──────────────
+  // 7 archetipi possibili per un DS CPU (DS_PERSONALITIES), assegnati una
+  // volta alla creazione — il DS del player non ne ha mai una. I tratti si
+  // mescolano (media) col valore derivato da tier/dominanza/generosità, così
+  // un DS caratterizzato resta comunque coerente col contesto del suo club
+  // invece di ignorarlo del tutto. churnBias (quanto è propenso a smuovere la
+  // rosa pagando una buonuscita pur di liberarsene) non ha un derivato di
+  // base: senza personalità resta neutro (0.5), com'è sempre il caso per il
+  // player.
+  const pers = team.ds?.personality;
+  let churnBias = 0.5;
+  if (pers) {
+    if (Number.isFinite(pers.ambition))   ambition     = (ambition + pers.ambition / 100) / 2;
+    if (Number.isFinite(pers.patience))   futureWeight = (futureWeight + pers.patience / 100) / 2;
+    if (Number.isFinite(pers.youthFocus)) youthBias    = (youthBias + pers.youthFocus / 100) / 2;
+    if (Number.isFinite(pers.churnBias))  churnBias    = pers.churnBias / 100;
+  }
+
+  // λ — prezzo ombra del denaro, in "punti di forza schierata per M€".
+  // È il cuore della riforma dello scoring: prima lo score era gain/costo, un
+  // RAPPORTO, che premiava sistematicamente l'affare più economico (uno
+  // svincolato mediocre batteva un fuoriclasse di ~17×, vedi evaluateTransfer-
+  // Target). Qui il denaro ha un costo-opportunità che DIPENDE da quanto ne hai:
+  // una big con 200M€ in cassa "sente" pochissimo 40M€ e prende il campione, una
+  // squadra di C con 4M€ li sente moltissimo e caccia occasioni. Un DS ambizioso
+  // sconta ulteriormente il costo del denaro.
+  // Clamp ai due estremi: senza pavimento un club straricco tratterebbe il
+  // denaro come gratis (e pagherebbe 150M€ per mezzo punto di forza); senza
+  // tetto un club in bancarotta rifiuterebbe perfino l'occasione da 0.5M€ che
+  // gli risolve la stagione.
+  // Il senso pratico di un obiettivo forte (§ discussione esplicita con
+  // l'utente): far spendere di più chi se lo può permettere davvero, non
+  // lasciare che il budget si accumuli senza motivo (osservato in 50 anni di
+  // simulazione: budget che esplodono senza che nessuno li usi). Ambition è
+  // ora sensibile alla dominanza reale, non solo alla fascia — quindi questo
+  // stesso sconto lo riflette automaticamente. Il coefficiente è più largo di
+  // prima (0.65-1.35 invece di 0.75-1.25) per rendere l'effetto tangibile.
+  const spendable = Math.max(1, team.budget || 0);
+  const rawLambda = (LAMBDA_BUDGET_K / spendable) * (1.35 - ambition * 0.7);
+  // Il pavimento NON è più fisso: sopra un budget di ~80M€ un LAMBDA_MIN
+  // uguale per tutti annullava del tutto lo sconto da ambizione appena
+  // calcolato (verificato: a 150M€+ dominante e marginale finivano identici
+  // a 0.08) — proprio la fascia di budget dove la maggior parte delle
+  // squadre finisce entro 20-30 stagioni di carriera (vedi simulazione a 50
+  // anni). Un'ambizione massima abbassa il pavimento fino a meno della metà:
+  // un dominatore vero continua a "sentire" il costo del denaro, e quindi a
+  // spenderlo, ben oltre il punto in cui un club qualunque smetterebbe.
+  const dynamicLambdaMin = LAMBDA_MIN * (1 - ambition * 0.6);   // 0.08 .. 0.032
+  const moneyWeight = Math.max(dynamicLambdaMin, Math.min(LAMBDA_MAX, rawLambda));
+
+  return { dsStrength, tier, ambition, futureWeight, youthBias, riskNoise, scoutingWidth, moneyWeight, churnBias };
+}
+
+// Taratura di λ: quanti "punti di forza schierata" vale 1M€ per una squadra che
+// ha esattamente 1M€ di budget. È LA manopola di equilibrio dell'intero mercato
+// — alzarla rende tutte le CPU più avare, abbassarla le rende più spendaccione.
+const LAMBDA_BUDGET_K = 6;
+// Pavimento di λ ancorato alla scala reale dei prezzi: nella fascia alta della
+// Serie A circa 10 punti di forza schierata costano sull'ordine dei 100M€, da
+// cui λ ≈ 0.10 come sensibilità "giusta" per un top club. Il vecchio pavimento
+// (0.015) rendeva il denaro di fatto gratis per chi ne aveva tanto: la Juventus
+// spendeva 124M€ per tappare un buco di gravità 5, perché la penalità di costo
+// valeva 1.4 punti contro un guadagno di 9.2. Solo i club straricchi sono
+// toccati da questa correzione: chi ha λ già sopra il pavimento resta invariato.
+const LAMBDA_MIN = 0.08;
+const LAMBDA_MAX = 1.20;    // nemmeno il club più povero rifiuta l'affare eccezionale
+
+// Quanto un club è disposto a "sentire meno" il costo del denaro in funzione
+// della GRAVITÀ del buco che sta tappando. Senza questo, λ dipendeva solo dal
+// budget e un club ricco spendeva cifre da capogiro anche per un problema
+// puramente estetico (un titolare schierato fuori posizione, gravità 5).
+// Sotto 1 = disposto a strapagare, sopra 1 = tirchio.
+function needUrgencyFactor(player, needs) {
+  const relevant = (needs || []).filter(n => n.role === player.role);
+  const severity = relevant.length ? Math.max(...relevant.map(n => n.severity)) : 0;
+  if (severity >= 25) return 0.55;  // ruolo senza NESSUN riservista: emergenza vera
+  if (severity >= 15) return 0.85;  // panchina corta
+  if (severity >= 10) return 0.70;  // ruolo scoperto in undici
+  if (severity >= 5) return 1.90;   // solo un fuori posizione: non ci si svena
+  return 3.00;                      // nessun bisogno: acquisto opportunistico
+}
+
+// Quota del valore di rivendita futuro che il DS considera recuperabile: un
+// cartellino non è una spesa secca, è un asset. Comprare un ventenne a 10M€ che
+// fra 3 anni ne varrà 25 costa, in termini reali, molto meno che comprare un
+// trentatreenne a 10M€ che non varrà più nulla.
+const RESALE_RECOVERY = 0.55;
+const PROJECTION_YEARS = 3;
+
+// Valore ATTESO della curva strengthDeltaForAge (che è casuale): stessi
+// scaglioni, media invece che estrazione — serve a proiettare senza iniettare
+// rumore dentro la valutazione economica.
+function expectedStrengthDeltaForAge(age) {
+  if (age < 23) return 3.5;   // +2/+5
+  if (age < 28) return 1.5;   // 0/+3
+  if (age <= 31) return 0;    // -1/+1
+  return -2;                  // -1/-3
+}
+
+// Proiezione deterministica della forza fra `years` anni, rispettando il tetto
+// individuale maxStrength (il "potenziale" già presente su ogni giocatore).
+// Permette alla CPU di ragionare sulle stagioni future e non solo sull'undici
+// di oggi.
+function projectPlayerStrength(player, years = PROJECTION_YEARS) {
+  const cap = player.maxStrength || 100;
+  let strength = player.strength;
+  let age = player.age ?? 27;
+  for (let i = 0; i < years; i++) {
+    strength = Math.max(1, Math.min(cap, strength + expectedStrengthDeltaForAge(age)));
+    age++;
+  }
+  return strength;
+}
+
+// ─── DISPONIBILITÀ SUL MERCATO ────────────────────────────────────────────────
+// Prima di questa funzione l'UNICO pool acquistabile dalla CPU era
+// getSquadSurplus (chi resta fuori dai migliori 22). Siccome ROLE_MIN somma
+// esattamente 22 e lo sfoltimento spinge tutte le rose verso quel pavimento,
+// dopo poche sessioni il mercato tra club si prosciugava: nessun titolare né
+// riserva cambiava MAI squadra e i colpi di mercato non esistevano proprio.
+//
+// La disponibilità diventa quindi una proprietà del singolo giocatore:
+//   'surplus'     — fuori dai migliori 22: il club se ne priva volentieri.
+//   'unsettled'   — titolare/riserva SCONTENTO: più forte del contesto in cui
+//                   gioca e abbastanza ambizioso da volerlo cambiare. Il club
+//                   non lo mette in vendita ma non lo trattiene davanti alla
+//                   cifra giusta → prezzo pieno maggiorato.
+//   (tutti gli altri sono intoccabili a qualunque prezzo)
+const UNSETTLED_MIN_GAP = 6;          // punti di forza sopra la media della rosa
+const UNSETTLED_THRESHOLD = 6;        // soglia di malcontento per finire sul mercato
+const UNSETTLED_LOYALTY_SHIELD = 6;   // quanto la lealtà massima annulla di malcontento
+
+// Margine di forza oltre la media della propria rosa che rende un giocatore
+// "elite per quel club": non finisce mai nel tritacarne dello sfoltimento a
+// sconto, nemmeno se il modulo non lo valorizza. Se davvero se ne vuole andare
+// lo farà dal canale 'unsettled', a prezzo maggiorato.
+const ELITE_MARGIN = 8;
+// Forza assoluta oltre la quale un giocatore è un asset raro OVUNQUE (fascia di
+// valore 80-90 = fino a 70M€): non si svende mai, nemmeno se il suo club è così
+// forte da considerarlo un rincalzo.
+const ELITE_ABSOLUTE = 80;
+
+// Livello sportivo REALE a cui gioca una squadra: forza media grezza dei suoi
+// undici titolari. È il metro giusto per giudicare se un giocatore è "troppo
+// forte per il contesto" — `team.strength` è invece la media dell'INTERA rosa
+// (recalculateTeamStrength), abbassata da riserve e giovani: usandola, alla
+// Juventus (media rosa 85) risultavano scontenti e in vendita tutti i titolari
+// da 93 in su, che è esattamente il contrario del comportamento realistico.
+// Riusa gli starters di getSquadTiers, che è già in cache.
+function getSquadLevel(team) {
+  const { starters } = getSquadTiers(team);
+  if (!starters.size) return team.strength || 50;
+  let total = 0;
+  starters.forEach(p => { total += p.strength; });
+  return total / starters.size;
+}
+
+function isEliteForTeam(player, team) {
+  return player.strength >= getSquadLevel(team) + ELITE_MARGIN;
+}
+
+// Livello della panchina di una squadra: forza media delle sue riserve (i
+// secondi 11 per modulo). Serve come soglia minima per giudicare se un
+// giocatore in arrivo avrebbe davvero un ruolo o sarebbe l'ennesimo rincalzo.
+function getReserveLevel(team) {
+  const { reserves } = getSquadTiers(team);
+  if (!reserves.size) return 0;
+  let total = 0;
+  reserves.forEach(p => { total += p.strength; });
+  return total / reserves.size;
+}
+
+// ─── IDONEITÀ DI UNA DESTINAZIONE IN PRESTITO ─────────────────────────────────
+// Un prestito ha senso solo se il giocatore GIOCA: è la stessa condizione vista
+// dai due lati del tavolo — il club che lo accoglie lo vuole perché lo migliora,
+// il club che lo cede lo manda via perché maturi con dei minuti nelle gambe. Un
+// prestito in cui il ragazzo si siede in tribuna non conviene a nessuno dei due.
+//
+// Prima non esisteva NESSUN controllo di qualità: findLoanDestination accettava
+// qualunque club con uno slot libero e ne sceglieva uno A CASO. In più
+// estimatePlayerJoinChance non penalizza mai un giocatore più debole della
+// squadra e premia i club di fascia alta — il sistema mandava quindi
+// sistematicamente i giovani deboli alle big, l'esatto contrario del realismo.
+//
+//   2 = entrerebbe negli undici titolari → prestito ideale, gioca
+//   1 = almeno al livello delle riserve  → rotazione vera, accettabile
+//   0 = sotto le riserve                 → farebbe panchina, prestito rifiutato
+function getLoanFitTier(player, dest) {
+  // Controllo economico prima di quello tattico: getReserveLevel usa la cache
+  // di getSquadTiers, wouldEnterBest11 no (ricalcola getBest11).
+  const reserveLevel = getReserveLevel(dest);
+  if (reserveLevel && player.strength < reserveLevel) return 0;
+  return wouldEnterBest11(dest, player) ? 2 : 1;
+}
+
+// Moltiplicatore di prezzo per una vendita avviata dal VENDITORE (sfoltimento,
+// bisogno di cassa): 0.60-0.90 per un esubero qualsiasi — chi vende per
+// necessità non tratta — ma sale fino a prezzo pieno e oltre man mano che il
+// giocatore è forte rispetto alla squadra che lo cede, perché su un campione la
+// necessità è del compratore, non del venditore.
+function getForcedSaleMult(player, sellingTeam) {
+  // Clausola assoluta: un giocatore da 80+ è merce rara ovunque e ha mercato a
+  // prescindere da chi lo cede — anche se al SUO club è solo un rincalzo. Senza
+  // questa, un 91 alla Juventus (dove la media titolari è più alta di lui)
+  // sarebbe finito comunque nella fascia di sconto pieno.
+  if (player.strength >= ELITE_ABSOLUTE) return 0.95 + Math.random() * 0.20;
+  const edge = player.strength - getSquadLevel(sellingTeam);
+  if (edge >= ELITE_MARGIN) return 0.95 + Math.random() * 0.20;   // 0.95-1.15: campione, nessuno sconto
+  if (edge >= 3) return 0.80 + Math.random() * 0.20;              // 0.80-1.00: buon giocatore
+  return 0.60 + Math.random() * 0.30;                             // 0.60-0.90: rincalzo, sconto pieno
+}
+
+// Malcontento di un giocatore che NON è esubero: quanto è più forte della
+// squadra in cui si trova, amplificato dalla sua ambizione e attenuato dalla sua
+// lealtà. Un 88 ambizioso in una squadra da 70 chiede di partire; lo stesso 88
+// con lealtà altissima, o in una squadra da 85, resta.
+function getUnsettledAvailability(player, team) {
+  // Confronto col livello dei TITOLARI, non con la media dell'intera rosa: un
+  // 94 alla Juventus non è "troppo forte per la Juventus", è semplicemente un
+  // titolare della Juventus.
+  const gap = player.strength - getSquadLevel(team);
+  if (gap < UNSETTLED_MIN_GAP) return null;
+  const ambition = player.personality?.ambition ?? 50;
+  const loyalty = player.personality?.loyalty ?? 50;
+  const discontent = gap * (0.5 + ambition / 100) - loyalty / 100 * UNSETTLED_LOYALTY_SHIELD;
+  if (discontent < UNSETTLED_THRESHOLD) return null;
+  // Più il giocatore è scontento, meno il club riesce a spuntare un premio:
+  // askMult scende da 1.45 (malumore appena sopra soglia, il club fa il prezzo)
+  // a 1.10 (vuole andarsene, il club non ha potere negoziale).
+  const over = Math.min(1, (discontent - UNSETTLED_THRESHOLD) / 10);
+  return { tier: 'unsettled', askMult: 1.45 - over * 0.35 };
+}
+
+// Pool realmente acquistabile da una squadra terza, con il moltiplicatore di
+// prezzo richiesto dal venditore per un'operazione avviata dal COMPRATORE.
+// (La vendita avviata dal venditore — sfoltimento, findBuyerForSurplusPlayer —
+// mantiene il suo sconto 0.60-0.90 separato: chi vende per necessità non è in
+// posizione di forza, chi riceve un'offerta non richiesta sì.)
+function getTransferListedPlayers(team) {
+  const surplus = new Set(getSquadSurplus(team));
+  const listed = [];
+  (team.roster || []).forEach(player => {
+    if (surplus.has(player)) {
+      // Esubero: prezzo di mercato pieno 90-120%, come da sempre in Opzione 1.
+      listed.push({ player, tier: 'surplus', askMult: 0.9 + Math.random() * 0.3 });
+      return;
+    }
+    const unsettled = getUnsettledAvailability(player, team);
+    if (unsettled) listed.push({ player, tier: unsettled.tier, askMult: unsettled.askMult });
+  });
+  return listed;
 }
 
 // Audit dei "buchi" di una squadra secondo il modulo dell'allenatore: usata
@@ -1969,7 +2629,9 @@ function getTeamNeeds(team) {
 // undici, si rivaluta lo stesso guadagno marginale sulle SOLE riserve (peso
 // ridotto ×0.35 — un buon rincalzo vale, ma meno di un titolare vero).
 // Ritorna null se il giocatore non è nemmeno eleggibile per la rosa.
-function evaluateTransferTarget(team, player, cost) {
+// `opts.needs`: i bisogni già calcolati dal chiamante (pickBestTransferTarget li
+// ha comunque sottomano) — evita di ricalcolare getTeamNeeds per ogni candidato.
+function evaluateTransferTarget(team, player, cost, opts = {}) {
   if (!canAddRole(team, player.role) || !canTeamAcquirePlayer(team, player)) return null;
   const formation = pickActiveFormation(team);
   const weighTeam = (entries) => entries.reduce((s, e) => s + getPlayerEffectiveStrength(e.player) * FIT_STRENGTH_MULT[e.fit], 0);
@@ -1977,8 +2639,10 @@ function evaluateTransferTarget(team, player, cost) {
   const before = weighTeam(getBest11(team.roster, formation));
   const after = weighTeam(getBest11([...team.roster, player], formation));
   let gain = after - before;
+  let isStarter = true;
 
   if (gain <= 0) {
+    isStarter = false;
     const { reserves } = getSquadTiers(team);
     const reserveRoster = [...reserves];
     const beforeR = weighTeam(getBest11(reserveRoster, formation));
@@ -1986,14 +2650,45 @@ function evaluateTransferTarget(team, player, cost) {
     gain = Math.max(0, afterR - beforeR) * 0.35;
   }
 
-  // Costo stimato: cartellino + 15% dello stipendio annuo su una finestra
-  // "tipica" di 3 anni — pesa il salario senza farlo dominare sul fee (stessa
-  // scala M€ del cartellino, stipendio convertito da k€/mese ad annuo/1000).
-  const salaryK = getRenewalSalary(player);
-  const estimatedWageCostM = annualSalary(salaryK) / 1000 * 3 * 0.15;
-  const totalCost = Math.max(0.1, cost + estimatedWageCostM);
+  const profile = getDsProfile(team);
 
-  return { gain, cost: totalCost, score: gain / totalCost };
+  // (1) ORIZZONTE FUTURO — quanto varrà questo giocatore fra 3 anni rispetto a
+  // oggi: positivo per un giovane con margine di crescita, NEGATIVO per un
+  // trentaduenne in declino. Prima mancava del tutto, e un 33enne da 80 batteva
+  // sistematicamente un 19enne da 70 a parità di costo.
+  const projected = projectPlayerStrength(player);
+  const futureTerm = (projected - player.strength) * profile.futureWeight * (isStarter ? 1 : 0.5);
+
+  // (2) PREMIO PROSPETTO — un giovane con molto potenziale residuo
+  // (maxStrength - strength) vale più di quanto dica la sua forza di oggi, tanto
+  // più per un club che vive di valorizzazione (youthBias alto = club piccolo).
+  const age = player.age ?? 27;
+  const headroom = Math.max(0, (player.maxStrength || player.strength) - player.strength);
+  const youthTerm = age <= 23 ? headroom * profile.youthBias * 0.25 : 0;
+
+  // (3) COSTO REALE — cartellino + stipendio stimato, MENO la quota di valore
+  // recuperabile rivendendolo fra 3 anni (il contratto futuro è ipotetico:
+  // niente deprezzamento da scadenza sulla proiezione).
+  const salaryK = getRenewalSalary(player);
+  const estimatedWageCostM = annualSalary(salaryK) / 1000 * PROJECTION_YEARS * 0.15;
+  const totalCost = Math.max(0.1, cost + estimatedWageCostM);
+  const resaleM = getTransferValue({
+    strength: projected, age: age + PROJECTION_YEARS, contract: null,
+  }) * RESALE_RECOVERY;
+  const netCost = Math.max(0, totalCost - resaleM);
+
+  // (4) UTILITÀ NETTA — guadagno sportivo (oggi + futuro) MENO il costo del
+  // denaro pesato per λ. Non più un rapporto ma una DIFFERENZA omogenea, in
+  // punti di forza schierata: così un grande acquisto costoso può battere
+  // un'occasione marginale, ma solo per un club che se lo può permettere.
+  // λ effettivo: il costo del denaro pesato ANCHE dalla gravità del buco che
+  // questo acquisto tapperebbe, non solo da quanto denaro c'è in cassa.
+  const needs = opts.needs || getTeamNeeds(team);
+  const urgency = needUrgencyFactor(player, needs);
+  const lambda = profile.moneyWeight * urgency;
+  const score = gain + futureTerm + youthTerm - netCost * lambda;
+
+  return { gain, cost: totalCost, netCost, score, futureTerm, youthTerm, isStarter, lambda, urgency };
 }
 
 // Sceglie il miglior bersaglio di mercato fra i candidati, per guadagno
@@ -2010,31 +2705,70 @@ function evaluateTransferTarget(team, player, cost) {
 // `statsSink`, se passato (array), riceve {team, gain, cost, score} per ogni
 // candidato scorato — usato dagli script diagnostici per osservare la
 // qualità dei bersagli senza duplicare la logica di scoring.
-function pickBestTransferTarget(team, candidates, statsSink) {
+function pickBestTransferTarget(team, candidates, statsSink, label = 'bersagli') {
   if (!candidates || !candidates.length) return null;
   const needs = getTeamNeeds(team);
   const needRoles = new Set(needs.map(n => n.role));
 
+  // NOTA: il taglio avviene ora DOPO l'ordinamento per forza. Prima era
+  // `.slice(0, 40).sort(...)`, cioè teneva i primi 40 candidati nell'ORDINE DI
+  // ITERAZIONE delle squadre (A→B→C) e li ordinava solo dopo: i giocatori di
+  // Serie C non raggiungevano quasi mai lo scoring, qualunque fosse il loro
+  // valore. Era un bug, non un'ottimizzazione.
+  // L'ampiezza della shortlist non è più una costante ma dipende dalla bravura
+  // del DS (profile.scoutingWidth, 8-22): chi è scarso vede meno mercato.
+  const profile = getDsProfile(team);
   const shortlist = candidates
     .filter(c => needRoles.size === 0 || needRoles.has(c.player.role) || Math.random() < 0.01)
-    .slice(0, 40)
     .sort((a, b) => b.player.strength - a.player.strength)
-    .slice(0, 15);
+    .slice(0, profile.scoutingWidth);
 
   const scored = shortlist
-    .map(c => ({ ...c, ev: evaluateTransferTarget(team, c.player, c.cost) }))
+    .map(c => ({ ...c, ev: evaluateTransferTarget(team, c.player, c.cost, { needs }) }))
     .filter(c => c.ev && c.ev.gain > 0);
   if (!scored.length) return null;
 
-  const dsStrength = team.ds?.strength ?? 50;
-  const noiseAmplitude = Math.max(0, (60 - dsStrength) / 60) * 0.35;
+  // Rumore del DS: ora ADDITIVO e proporzionato alla dispersione degli score
+  // della shortlist. Con lo score diventato una differenza (che può essere
+  // vicina a zero o negativa) un rumore MOLTIPLICATIVO come il precedente
+  // sarebbe stato irrilevante sui valori piccoli ed enorme sui grandi.
+  const scores = scored.map(c => c.ev.score);
+  const spread = Math.max(...scores) - Math.min(...scores);
+  const amplitude = profile.riskNoise * (spread || Math.abs(scores[0]) || 1);
   scored.forEach(c => {
-    c.noisyScore = c.ev.score * (1 + (Math.random() * 2 - 1) * noiseAmplitude);
+    c.noisyScore = c.ev.score + (Math.random() * 2 - 1) * amplitude;
     if (statsSink) statsSink.push({ team: team.name, gain: c.ev.gain, cost: c.ev.cost, score: c.ev.score });
   });
 
   scored.sort((a, b) => b.noisyScore - a.noisyScore);
-  return scored[0];
+
+  // Traccia del confronto: la scomposizione dello score di ogni finalista, così
+  // è sempre ricostruibile PERCHÉ è stato scelto X invece di Y.
+  if (dsLogEnabledFor(team)) {
+    dsLog(team, 'confronto', `valuta ${scored.length} ${label} (su ${candidates.length} disponibili) — λ=${profile.moneyWeight.toFixed(3)}`);
+    scored.slice(0, 6).forEach((c, i) => {
+      const p = c.player, e = c.ev;
+      const urgencyLabel = e.urgency <= 0.6 ? 'emergenza' : e.urgency <= 0.9 ? 'bisogno reale'
+        : e.urgency <= 1.9 ? 'problema minore' : 'nessun bisogno';
+      const breakdown = `undici ${e.gain >= 0 ? '+' : ''}${e.gain.toFixed(1)}`
+        + ` | futuro ${e.futureTerm >= 0 ? '+' : ''}${e.futureTerm.toFixed(1)}`
+        + ` | prospetto +${e.youthTerm.toFixed(1)}`
+        + ` | costo netto ${e.netCost.toFixed(1)}M×λ${e.lambda.toFixed(3)} = −${(e.netCost * e.lambda).toFixed(1)}`
+        + ` (${urgencyLabel} ×${e.urgency.toFixed(2)})`;
+      dsLog(team, i === 0 ? 'scelta' : 'scarto',
+        `${i === 0 ? '► ' : '   '}${p.lastName} (${p.role}, ${p.age}a, forza ${p.strength}${p.maxStrength ? `→${p.maxStrength}` : ''}) `
+        + `${c.cost.toFixed(1)}M€ · score ${e.score.toFixed(2)} [${breakdown}]`);
+    });
+    if (scored[0].ev.score <= 0) {
+      dsLog(team, 'scarto', `nessun bersaglio vale il suo prezzo (miglior score ${scored[0].ev.score.toFixed(2)} ≤ 0) → tiene i soldi in cassa`);
+    }
+  }
+
+  // Disciplina economica: se nemmeno il bersaglio scelto vale il proprio costo
+  // (score negativo = quel denaro rende di più restando in cassa, o su un colpo
+  // migliore a un giro successivo), non si compra affatto. È ciò che impedisce
+  // alla CPU di bruciare budget in operazioni marginali solo perché può.
+  return scored[0].ev.score > 0 ? scored[0] : null;
 }
 
 // ─── FORMA (condizione fisica 0-100%) ─────────────────────────────────────────
@@ -2051,9 +2785,14 @@ const FORMA_INJURY_PER_MATCH = 2; // −2% per ogni giornata di stop
 function getForma(p) { return p.forma ?? FORMA_MAX; } // backfill salvataggi legacy
 function getPlayerEffectiveStrength(p) { return p.strength * getForma(p) / 100; }
 
-// Badge forma colorato per la UI (verde ≥85, giallo 60-84, rosso <60)
-function formatForma(p) {
-  const f = Math.round(getForma(p));
+// Badge forma colorato per la UI (verde ≥85, giallo 60-84, rosso <60).
+// formaOverride (opzionale): forma "fotografata" in un momento passato (es.
+// al fischio d'inizio di una partita già giocata) invece della forma LIVE di
+// oggi — vedi lineup1/lineup2 in generateMatchResult e il modal dettaglio
+// partita, che altrimenti mostrerebbero sempre la forma attuale del
+// giocatore anche riaprendo una gara di giornate fa.
+function formatForma(p, formaOverride) {
+  const f = Math.round(formaOverride ?? getForma(p));
   const color = f >= 85 ? '#16a34a' : f >= 60 ? '#f59e0b' : '#ef4444';
   return `<span style="color:${color};font-weight:600">${f}%</span>`;
 }
@@ -2065,11 +2804,19 @@ function getEffectiveStrength(team) {
   if (!team.roster || !team.roster.length) return team.strength || 50;
   const available = filterAvailableRoster(team.roster);
   const formationName = pickActiveFormation(team);
-  const best11 = getBest11(available.length >= 7 ? available : team.roster, formationName);
+  // opts.coach: la selezione stessa dell'undici tiene conto della personalità
+  // dell'allenatore (§ discussione esplicita con l'utente) — vedi getBest11.
+  const best11 = getBest11(available.length >= 7 ? available : team.roster, formationName, { coach: team.coach });
   if (!best11.length) return team.strength || 50;
-  const total = best11.reduce((sum, { player, fit }) => {
-    const eff = getPlayerEffectiveStrength(player);
-    return sum + eff * FIT_STRENGTH_MULT[fit];
+  const total = best11.reduce((sum, { player, fit, role }) => {
+    // getCoachRoleAgeFormaMult/getCoachFitMult ritornano 1/FIT_STRENGTH_MULT[fit]
+    // invariati se team.coach non ha personalità — stesso identico calcolo di
+    // prima in quel caso, nessuna differenza per una squadra senza allenatore
+    // caratterizzato. role qui è lo SLOT davvero giocato in questa formazione
+    // (§ bug doppio ruolo: prima non veniva passato, il bonus/malus di ruolo
+    // finiva sempre sul player.role primario anche schierato nel secondario).
+    const eff = getPlayerEffectiveStrength(player) * getCoachRoleAgeFormaMult(player, team.coach, role);
+    return sum + eff * getCoachFitMult(team.coach, fit, player, role);
   }, 0);
   const base = total / best11.length;
   if (!team.coach) return Math.max(1, Math.min(100, base));
@@ -2146,12 +2893,16 @@ function processMatchdayRecovery(preState) {
 // passando i round appena giocati delle tre leghe.
 function applyMatchdayForma(rounds) {
   const played = new Set();
+  // Il Trascinatore (§ personalità dell'allenatore): raddoppia il calo di
+  // forma per la SUA squadra soltanto — il bonus di rendimento che dà ha un
+  // prezzo reale in usura fisica, non è mai gratuito.
+  const playLossFor = (team) => team?.coach?.personality?.type === 'Il Trascinatore' ? FORMA_PLAY_LOSS * 2 : FORMA_PLAY_LOSS;
   rounds.forEach(round => (round || []).forEach(m => {
     if (!m.result) return;
-    [...(m.result.lineup1 || []), ...(m.result.lineup2 || [])].forEach(({ player: p }) => {
-      p.forma = Math.max(0, getForma(p) - FORMA_PLAY_LOSS);
-      played.add(p.id);
-    });
+    const loss1 = playLossFor(m.team1);
+    const loss2 = playLossFor(m.team2);
+    (m.result.lineup1 || []).forEach(({ player: p }) => { p.forma = Math.max(0, getForma(p) - loss1); played.add(p.id); });
+    (m.result.lineup2 || []).forEach(({ player: p }) => { p.forma = Math.max(0, getForma(p) - loss2); played.add(p.id); });
   }));
   [...serieA, ...serieB, ...serieC].forEach(team => team.roster.forEach(p => {
     if (played.has(p.id)) return;                 // ha giocato: già scalato
@@ -2259,10 +3010,11 @@ function getCoachTransferValue(coach) {
 // toTeamName = null → giocatore svincolato (chiude solo l'entrata corrente)
 function recordTransfer(player, toTeamName, fee) {
   if (!player.career) player.career = [];
+  const seq = transferSeq++;
   const last = player.career[player.career.length - 1];
-  if (last && last.left === null) last.left = seasonCount;
+  if (last && last.left === null) { last.left = seasonCount; last.leftSeq = seq; }
   if (toTeamName) {
-    player.career.push({ team: toTeamName, joined: seasonCount, left: null, fee: fee ?? null });
+    player.career.push({ team: toTeamName, joined: seasonCount, left: null, fee: fee ?? null, seq });
     // Torna a lavorare: azzera il conteggio di stagioni da svincolato (vedi
     // STEP 1, ritiro anticipato dopo 3 stagioni consecutive senza squadra).
     player.seasonsUnemployed = 0;
@@ -2277,6 +3029,10 @@ function recordTransfer(player, toTeamName, fee) {
 // nessuna parte (il gioco non lo archivia), quindi un ritiro puro non può
 // comparire qui — resta comunque visibile nella sezione Ritiri di Notizie.
 function buildTeamMarketMoves(team) {
+  // Stagione mostrata: marketDisplaySeason, non seasonCount "live" (§ bug
+  // segnalato dall'utente — vedi commento alla dichiarazione di
+  // marketDisplaySeason più sopra).
+  const season = marketDisplaySeason;
   // Set per id: un giocatore va contato una volta sola anche se per qualche
   // motivo risultasse raggiungibile da più di una fonte contemporaneamente.
   const seenIds = new Set();
@@ -2295,16 +3051,21 @@ function buildTeamMarketMoves(team) {
       // joined=seasonCount ma SENZA una voce precedente in carriera — non
       // sono un acquisto di mercato) e la rosa generata al bootstrap
       // (joined=0, esclusa comunque a meno che seasonCount non sia 0).
-      if (entry.joined === seasonCount && i > 0) {
-        acquisti.push({ player: p, from: career[i - 1].team, fee: entry.fee });
+      if (entry.joined === season && i > 0) {
+        acquisti.push({ player: p, from: career[i - 1].team, fee: entry.fee, seq: entry.seq ?? 0 });
       }
-      if (entry.left === seasonCount) {
+      if (entry.left === season) {
         const next = career[i + 1];
-        cessioni.push({ player: p, to: next ? next.team : null, fee: next ? next.fee : null });
+        cessioni.push({ player: p, to: next ? next.team : null, fee: next ? next.fee : null, seq: entry.leftSeq ?? 0 });
       }
     });
   });
-  return { acquisti, cessioni };
+  // Ordine cronologico dal più vecchio al più recente (§ richiesta esplicita
+  // dell'utente) — seq è assegnato da recordTransfer in ordine di accadimento
+  // reale, a differenza dell'ordine di iterazione della rosa usato prima.
+  acquisti.sort((a, b) => a.seq - b.seq);
+  cessioni.sort((a, b) => a.seq - b.seq);
+  return { acquisti, cessioni, season };
 }
 
 // ─── SISTEMA CONTRATTI ────────────────────────────────────────────────────────
@@ -2414,7 +3175,7 @@ function signPreContract(player, fromTeam, toTeam) {
   const [minDur, maxDur] = getContractDurationRange(player.strength, player.age);
   const signedDuration = minDur + Math.floor(Math.random() * (maxDur - minDur + 1));
   pendingPreContracts.push({ player, fromTeam, toTeam, signedSalary, signedDuration });
-  transferLog.push(`${icon('clipboard')} Pre-contratto: <strong>${toTeam.name}</strong> firma con ${player.firstName} ${player.lastName} (da <strong>${fromTeam.name}</strong>) — arriverà la prossima stagione (${signedDuration} anni, ${formatMoneyK(annualSalary(signedSalary))}€/anno)`);
+  transferLog.push(`✍️ Pre-contratto: <strong>${toTeam.name}</strong> firma con ${player.firstName} ${player.lastName} (da <strong>${fromTeam.name}</strong>) — arriverà la prossima stagione (${signedDuration} anni, ${formatMoneyK(annualSalary(signedSalary))}€/anno)`);
 }
 
 // Converte uno stipendio mensile (k€) nella cifra annua mostrata in UI.
@@ -2682,6 +3443,27 @@ function computeRenewalOutcome(player, team) {
   const tier = Math.min(5, Math.max(1, Math.ceil((score - 20) / 20)));
   const [minDur, maxDur] = getContractDurationRange(player.strength, player.age);
   return Math.max(minDur, Math.min(maxDur, tier));
+}
+
+// L'esito (durata proposta, o 0 se il giocatore rifiuterebbe) va mostrato
+// all'umano PRIMA che clicchi "Proponi rinnovo" (§ richiesta esplicita
+// dell'utente: non vedeva la durata da nessuna parte) — ma computeRenewalOutcome
+// contiene un tiro di dado (noise), quindi non è "innocuo" ricalcolarlo ad ogni
+// render: darebbe un'anteprima diversa dal risultato vero al click. Si calcola
+// una volta sola (cache per player.id) e si consuma solo alla conferma vera,
+// così l'anteprima è sempre coerente con l'esito — un nuovo tentativo dopo un
+// rifiuto (vedi "puoi riprovare" nella tab Rosa) tira di nuovo i dadi da zero.
+const renewalOutcomePreviewCache = new Map();
+function previewRenewalOutcome(player, team) {
+  if (!renewalOutcomePreviewCache.has(player.id)) {
+    renewalOutcomePreviewCache.set(player.id, computeRenewalOutcome(player, team));
+  }
+  return renewalOutcomePreviewCache.get(player.id);
+}
+function consumeRenewalOutcome(player, team) {
+  const outcome = previewRenewalOutcome(player, team);
+  renewalOutcomePreviewCache.delete(player.id);
+  return outcome;
 }
 
 // Motivo del rifiuto (CPU e umano, stesso testo) — puramente in base
@@ -3074,9 +3856,23 @@ function showMatchDetailModal(match, followTeamName) {
   const fm1 = match.team1.coach ? pickActiveFormation(match.team1) : '?';
   const fm2 = match.team2.coach ? pickActiveFormation(match.team2) : '?';
 
-  const lineupRows = (lineup) => (lineup || []).map(({ player: p, role: entryRole, fit, assignedSubRole }) => {
+  const lineupRows = (lineup, team) => (lineup || []).map(({ player: p, role: entryRole, fit, assignedSubRole, forma: matchForma }) => {
+    // forma "fotografata" a fine partita (assente nei salvataggi/risultati
+    // precedenti a questo fix: fallback alla forma live di p, comportamento
+    // identico a prima). Un player-proxy con la forma giusta va passato a
+    // getCoachRoleAgeFormaMult, che altrimenti leggerebbe p.forma LIVE per Il
+    // Rotazionista (unica personalità che dipende dalla forma).
+    const formaSnapshot = matchForma ?? getForma(p);
+    const formaPlayer = matchForma != null ? { ...p, forma: matchForma } : p;
     const rowClass = fit === 'outOfRole' ? ' md-oor' : fit === 'outOfPosition' ? ' md-oop' : '';
-    const fitTitle = fit === 'outOfRole' ? 'Fuori ruolo: 70% forza' : fit === 'outOfPosition' ? 'Fuori posizione: 80% forza' : '';
+    // getCoachFitMult (non FIT_STRENGTH_MULT diretto): l'Integralista Tattico
+    // (-8%/-18%) e Lo Sperimentatore (-2.5%/-5%) SOSTITUISCONO il malus
+    // standard (-5%/-10%) — § bug segnalato dall'utente, il tooltip/valore
+    // mostrava sempre lo standard anche con queste due personalità in panca,
+    // mentre il motore per il risultato usava già (correttamente) questa
+    // stessa funzione in getBest11/getEffectiveStrength.
+    const fitMultValue = getCoachFitMult(team?.coach, fit, p, entryRole);
+    const fitTitle = fit === 'outOfRole' ? `Fuori ruolo: ${Math.round(fitMultValue * 100)}% forza` : fit === 'outOfPosition' ? `Fuori posizione: ${Math.round(fitMultValue * 100)}% forza` : '';
     // Posizione IN CUI è schierato in questa partita (assignedSubRole, dallo
     // slot di formazione assegnato da getBest11 — usa entryRole, il ruolo
     // EFFETTIVAMENTE giocato in questo slot, non p.role/primario, dato che un
@@ -3085,25 +3881,41 @@ function showMatchDetailModal(match, followTeamName) {
     // arancione della riga (rowClass/ovrClass), senza scritta "fuori
     // posizione/ruolo".
     const positionLabel = entryRole !== 'POR' && assignedSubRole ? ROLE_POSITION_LABELS[assignedSubRole] || assignedSubRole : '';
-    const effStr = Math.round(p.strength * FIT_STRENGTH_MULT[fit]);
-    const ovrClass = fit === 'outOfRole' ? ' md-ovr-oor' : fit === 'outOfPosition' ? ' md-ovr-oop' : '';
-    const ovrDisplay = fit === 'position' ? p.strength : effStr;
-    // Colonna di stato: cartellino preso IN QUESTA partita (cross-referenza
-    // con r.events, non lo storico stagionale) + infortunio in corso — impilati
-    // uno sopra l'altro in una colonna a larghezza fissa (.md-status-col),
-    // MAI in coda alla riga: se aggiunti dopo .md-ovr con margin-left:auto
-    // il badge del valore si sposta a sinistra ogni volta che compare
-    // un'icona in più (era il bug segnalato).
-    const cardEvent = (r.events || []).find(e => (e.type === 'yellow' || e.type === 'red') && e.player === p);
-    const cardIcon = cardEvent ? `<span class="md-status-tag" title="${cardEvent.type === 'red' ? 'Espulso' : 'Ammonito'}">${cardEvent.type === 'red' ? '🟥' : '🟨'}</span>` : '';
+    // Due effetti INDIPENDENTI possono capitare insieme sullo stesso
+    // giocatore (§ richiesta esplicita dell'utente): il fit di posizione/
+    // ruolo (già segnalato dal colore del NOME/riga, rowClass sopra) e il
+    // bonus/malus di personalità dell'allenatore (getCoachRoleAgeFormaMult —
+    // es. un difensore di un Catenacciaro ha un vero +6% indipendentemente
+    // dal fit). Il BADGE del valore ora riflette solo il secondo (verde se
+    // bonus, rosso se malus), il nome/riga resta il solo indicatore del
+    // primo — due segnali visivi separati invece di uno solo che li confonde.
+    const personalityMult = team?.coach ? getCoachRoleAgeFormaMult(formaPlayer, team.coach, entryRole) : 1;
+    const totalMult = fitMultValue * personalityMult;
+    const effStr = Math.round(p.strength * totalMult);
+    const ovrClass = personalityMult > 1 ? ' md-ovr-bonus' : personalityMult < 1 ? ' md-ovr-malus' : '';
+    const ovrDisplay = totalMult === 1 ? p.strength : effStr;
+    // Tooltip con la scomposizione completa: forza di base, effetto fit (se
+    // presente) ed effetto personalità (se presente), fino al valore finale.
+    const titleParts = [`Forza originale ${p.strength}`];
+    if (fit === 'outOfPosition') titleParts.push(`fuori posizione ${Math.round((fitMultValue - 1) * 100)}%`);
+    else if (fit === 'outOfRole') titleParts.push(`fuori ruolo ${Math.round((fitMultValue - 1) * 100)}%`);
+    else if (fit === 'position' && fitMultValue !== 1) titleParts.push(`specialista a ruolo/posizione unici +${Math.round((fitMultValue - 1) * 100)}%`);
+    if (personalityMult !== 1 && team?.coach?.personality) {
+      const pct = Math.round((personalityMult - 1) * 100);
+      titleParts.push(`${team.coach.personality.type} ${pct > 0 ? '+' : ''}${pct}%`);
+    }
+    const ovrTitle = totalMult !== 1 ? `${titleParts.join(' · ')} = ${effStr}` : '';
+    // Colonna di stato: SOLO infortunio in corso (§ richiesta esplicita
+    // dell'utente: il cartellino va tolto qui, non nella cronaca — quella
+    // resta invariata più sotto, eventsHtml, che legge r.events direttamente).
     const injuryIcon = (p.injuryMatchesLeft || 0) > 0 ? '<span class="md-status-tag md-injured" title="Infortunato">🤕</span>' : '';
     const initial = p.firstName ? p.firstName.charAt(0) + '.' : '';
     return `<div class="md-player-row${rowClass}"${fitTitle ? ` title="${fitTitle}"` : ''}>
       <span class="md-role-badge role-${entryRole}">${entryRole}</span>
       <span class="md-name-cell">${initial} ${p.lastName}${positionLabel ? ` <span style="font-size:.7rem;color:#999">(${positionLabel})</span>` : ''}</span>
-      <span class="md-forma">${formatForma(p)}</span>
-      <span class="md-status-col">${cardIcon}${injuryIcon}</span>
-      <span class="md-ovr${ovrClass}" title="${fit !== 'position' ? `Forza reale ${p.strength} × ${Math.round(FIT_STRENGTH_MULT[fit] * 100)}%` : ''}">${ovrDisplay}</span>
+      <span class="md-forma">${formatForma(p, formaSnapshot)}</span>
+      <span class="md-status-col">${injuryIcon}</span>
+      <span class="md-ovr${ovrClass}" title="${ovrTitle}">${ovrDisplay}</span>
     </div>`;
   }).join('');
 
@@ -3139,11 +3951,11 @@ function showMatchDetailModal(match, followTeamName) {
       <div class="md-lineups">
         <div class="md-lineup-col">
           <div class="md-lineup-header">${match.team1.name}</div>
-          ${lineupRows(r.lineup1)}
+          ${lineupRows(r.lineup1, match.team1)}
         </div>
         <div class="md-lineup-col">
           <div class="md-lineup-header md-right">${match.team2.name}</div>
-          ${lineupRows(r.lineup2)}
+          ${lineupRows(r.lineup2, match.team2)}
         </div>
       </div>` : '';
   const eventsInner = hasDetails
@@ -3174,7 +3986,7 @@ function showMatchDetailModal(match, followTeamName) {
         <span class="md-score">${r.team1Goals}–${r.team2Goals}</span>
         <span class="md-team-name md-team-right"><span>${match.team2.name}</span>${teamLogoOrJerseyHtml(match.team2, false, false)}</span>
       </div>
-      <div class="md-formations">${fm1} &nbsp;vs&nbsp; ${fm2}</div>
+      <div class="md-formations">${coachPersonalityBadgeHtml(match.team1.coach)} ${fm1} &nbsp;vs&nbsp; ${fm2} ${coachPersonalityBadgeHtml(match.team2.coach)}</div>
       ${lineupsHtml}
       <div class="md-events-section">
         <div class="md-events-title">Cronaca</div>
@@ -3366,8 +4178,21 @@ function generateMatchResult(team1, team2) {
   const avail2 = filterAvailableRoster(team2.roster || []);
   const fm1 = pickActiveFormation(team1);
   const fm2 = pickActiveFormation(team2);
-  const lineup1 = getBest11(avail1.length >= 7 ? avail1 : (team1.roster || []), fm1);
-  const lineup2 = getBest11(avail2.length >= 7 ? avail2 : (team2.roster || []), fm2);
+  // opts.coach: stessa selezione "consapevole della personalità" usata per il
+  // calcolo della forza (getEffectiveStrength) — chi scende in campo secondo
+  // le statistiche di presenze/gol/assist è lo stesso undici che ha deciso il
+  // risultato, non uno scelto con criteri diversi.
+  const lineup1 = getBest11(avail1.length >= 7 ? avail1 : (team1.roster || []), fm1, { coach: team1.coach });
+  const lineup2 = getBest11(avail2.length >= 7 ? avail2 : (team2.roster || []), fm2, { coach: team2.coach });
+  // Fotografa la forma di ciascun titolare COSÌ COM'ERA al fischio d'inizio
+  // (§ bug segnalato dall'utente: il modal dettaglio partita, riaperto dopo
+  // che altre giornate hanno fatto scendere/salire la forma, ricalcolava il
+  // bonus/malus del Rotazionista sulla forma di OGGI invece che su quella
+  // vera di questa partita — risultato corretto, ma badge/tooltip ingannevoli
+  // su una gara passata). Il risultato in sé usa già la forma corretta
+  // (getEffectiveStrength gira PRIMA che applyMatchdayForma la faccia scendere).
+  lineup1.forEach(e => { e.forma = getForma(e.player); });
+  lineup2.forEach(e => { e.forma = getForma(e.player); });
   const players1 = lineup1.map(e => e.player);
   const players2 = lineup2.map(e => e.player);
   players1.forEach(p => { p.seasonAppearances = (p.seasonAppearances || 0) + 1; });
@@ -3806,16 +4631,25 @@ function estimateNetTransferBudget(team) {
   return (team.budget || 0) - cost;
 }
 
+// z-score dentro l'array passato (non differenza assoluta): usato per capire
+// QUANTO una squadra è un outlier rispetto alla PROPRIA lega in QUESTA
+// stagione — a differenza di una differenza in valore assoluto, resta
+// significativo anche quando la scala dei numeri cresce nel tempo (il budget
+// si gonfia senza limite di stagione in stagione, §3 REGOLE_CALCIOMERCATO: un
+// dominio di 400M€ pesa "tanto quanto" un dominio di 4M€ se in entrambi i casi
+// rappresenta lo stesso scarto relativo dal resto della lega quell'anno).
+function zScoresOf(values) {
+  const n = values.length;
+  if (!n) return [];
+  const mean = values.reduce((a, b) => a + b, 0) / n;
+  const variance = values.reduce((s, v) => s + (v - mean) ** 2, 0) / n;
+  const sd = Math.sqrt(variance);
+  return values.map(v => sd > 1e-9 ? (v - mean) / sd : 0);
+}
+
 function computePreseasonPrevisioni(teams, league, oldStandingsByLeague) {
   const N = teams.length;
   const leagueOrder = { A: 1, B: 2, C: 3 };
-
-  const strengthRank = new Map(
-    [...teams].sort((a, b) => (b.strength || 0) - (a.strength || 0)).map((t, i) => [t.name, i + 1])
-  );
-  const budgetRank = new Map(
-    [...teams].sort((a, b) => estimateNetTransferBudget(b) - estimateNetTransferBudget(a)).map((t, i) => [t.name, i + 1])
-  );
 
   const placementRank = new Map();
   teams.forEach(team => {
@@ -3843,13 +4677,24 @@ function computePreseasonPrevisioni(teams, league, oldStandingsByLeague) {
     }
   });
 
-  return [...teams]
-    .map(t => ({
-      team: t,
-      avgRank: (strengthRank.get(t.name) + budgetRank.get(t.name) + placementRank.get(t.name)) / 3,
-    }))
-    .sort((a, b) => a.avgRank - b.avgRank)
-    .map(e => e.team);
+  // Prima si mediavano i RANGHI (1°, 2°, 3°...): una prima con 12 punti di
+  // margine sulla seconda finiva mediata esattamente come una prima per un
+  // soffio, perché "primo" vale sempre "1" a prescindere da quanto pesi lo
+  // scarto vero. Ora si media lo z-score dei tre fattori (quanto ciascuna
+  // squadra è outlier rispetto alla SUA lega quest'anno): lo scarto reale
+  // torna a contare, ed è la base di dominanceScore usato più sotto da
+  // setObjectives per modulare l'ambizione del DS in modo continuo, non solo
+  // a 4 fasce fisse.
+  const strengthZ = zScoresOf(teams.map(t => t.strength || 0));
+  const budgetZ = zScoresOf(teams.map(t => estimateNetTransferBudget(t)));
+  // Piazzamento: rank più basso = meglio, va invertito per essere coerente
+  // con "z più alto = squadra più forte" degli altri due fattori.
+  const placementZ = zScoresOf(teams.map(t => (N + 1) - placementRank.get(t.name)));
+
+  return teams
+    .map((t, i) => ({ team: t, dominance: (strengthZ[i] + budgetZ[i] + placementZ[i]) / 3 }))
+    .sort((a, b) => b.dominance - a.dominance)
+    .map(e => { e.team._previsioniDominance = e.dominance; return e.team; });
 }
 
 // Modal "Previsioni pre-stagione": mostra l'ordine di computePreseasonPrevisioni
@@ -4072,6 +4917,12 @@ function sortPlayersBy(players, sortKeys, key, dir) {
   });
   return dir === 'desc' ? sorted.reverse() : sorted;
 }
+// Intestazioni di tabella ordinabili al click, riusate da ogni tabella rosa
+// del gioco (scheda squadra CPU, tab Rosa del mercato del player).
+function sortArrow(activeKey, key, dir) { return activeKey === key ? (dir === 'desc' ? ' ▼' : ' ▲') : ''; }
+function sortableTh(label, key, activeKey, dir, dataAttr) {
+  return `<th data-${dataAttr}="${key}" style="cursor:pointer;user-select:none" title="Ordina per ${label.toLowerCase()}">${label}${sortArrow(activeKey, key, dir)}</th>`;
+}
 
 function showTeamDetailsModal(teamName) {
   const allLeagues = [...serieA, ...serieB, ...serieC];
@@ -4160,7 +5011,7 @@ function showTeamDetailsModal(teamName) {
       // Mercato: acquisti/cessioni della stagione corrente, derivati da
       // player.career (buildTeamMarketMoves) — vedi commento lì per i
       // dettagli su cosa è incluso/escluso (niente vivaio, niente ritiri puri).
-      const { acquisti, cessioni } = buildTeamMarketMoves(team);
+      const { acquisti, cessioni, season: marketSeason } = buildTeamMarketMoves(team);
       const moveRow = (m, otherTeamName) => {
         const p = m.player;
         const costo = m.fee === 'prestito' ? '→ Prestito' : m.fee === 'rientro' ? '← Rientro' : m.fee ? `${m.fee.toFixed(1)}M€` : '0';
@@ -4171,13 +5022,13 @@ function showTeamDetailsModal(teamName) {
       const cessioniRows = cessioni.map(m => moveRow(m, m.to)).join('');
       const emptyRow = label => `<tr><td colspan="8" style="text-align:center;color:var(--text-faint)">${label}</td></tr>`;
       const marketColgroup = `<colgroup><col class="mkt-col-naz"><col class="mkt-col-nome"><col class="mkt-col-ruolo"><col class="mkt-col-posizione"><col class="mkt-col-eta"><col class="mkt-col-forza"><col class="mkt-col-club"><col class="mkt-col-costo"></colgroup>`;
-      tableSection = `<h4>Acquisti — Stagione ${seasonCount} (${acquisti.length})</h4>
+      tableSection = `<h4>Acquisti — Stagione ${marketSeason} (${acquisti.length})</h4>
       <table class="market-table">
         ${marketColgroup}
         <thead><tr><th class="col-naz">Naz.</th><th>Nome</th><th>Ruolo</th><th>Posizione</th><th>Età</th><th>Forza</th><th>Da</th><th>Costo</th></tr></thead>
         <tbody>${acquistiRows || emptyRow('Nessun acquisto questa stagione')}</tbody>
       </table>
-      <h4 style="margin-top:16px">Cessioni — Stagione ${seasonCount} (${cessioni.length})</h4>
+      <h4 style="margin-top:16px">Cessioni — Stagione ${marketSeason} (${cessioni.length})</h4>
       <table class="market-table">
         ${marketColgroup}
         <thead><tr><th class="col-naz">Naz.</th><th>Nome</th><th>Ruolo</th><th>Posizione</th><th>Età</th><th>Forza</th><th>A</th><th>Costo</th></tr></thead>
@@ -4202,11 +5053,11 @@ function showTeamDetailsModal(teamName) {
       </ul>
       <h4>Staff Tecnico</h4>
       <p><strong>Allenatore:</strong> ${team.coach
-        ? `<span class="player-name-link" id="staff-coach-link">${team.coach.firstName} ${team.coach.lastName}</span> — Età: ${team.coach.age} — Forza: <strong>${team.coach.strength}</strong> — Stipendio: <strong>${formatMoneyK(annualSalary(team.coach.contract?.salary ?? getDisplaySalary(team.coach.strength)))}€/anno</strong>
+        ? `<span class="player-name-link" id="staff-coach-link">${team.coach.firstName} ${team.coach.lastName}</span> — Età: ${team.coach.age} — Forza: <strong>${team.coach.strength}</strong> — Stipendio: <strong>${formatMoneyK(annualSalary(team.coach.contract?.salary ?? getDisplaySalary(team.coach.strength)))}€/anno</strong>${team.coach.personality ? ` — Personalità: <strong>${team.coach.personality.type}</strong>` : ''}
         <br>Moduli preferiti: <strong>${(team.coach.formations || []).join(' / ') || '?'}</strong> (attivo: <strong>${pickActiveFormation(team)}</strong>) <span class="player-name-link" id="staff-formation-link">${icon('clipboard')} Vedi formazione</span>`
         : `<em>Nessuno</em>`}</p>
       <p><strong>Direttore Sportivo:</strong> ${team.ds
-        ? `<span class="player-name-link" id="staff-ds-link">${team.ds.firstName} ${team.ds.lastName}</span> — Età: ${team.ds.age} — Forza: <strong>${team.ds.strength}</strong> — Stipendio: <strong>${formatMoneyK(annualSalary(team.ds.contract?.salary ?? Math.max(1, Math.round(getDisplaySalary(team.ds.strength) / 10))))}€/anno</strong>`
+        ? `<span class="player-name-link" id="staff-ds-link">${team.ds.firstName} ${team.ds.lastName}</span> — Età: ${team.ds.age} — Forza: <strong>${team.ds.strength}</strong> — Stipendio: <strong>${formatMoneyK(annualSalary(team.ds.contract?.salary ?? Math.max(1, Math.round(getDisplaySalary(team.ds.strength) / 10))))}€/anno</strong>${team.ds.personality ? ` — Personalità: <strong>${team.ds.personality.type}</strong>` : ''}`
         : `<em>Nessuno</em>`}</p>
       <p><strong>Presidente:</strong> ${team.president
         ? `${team.president.firstName} ${team.president.lastName} — ${getPresidentPersonalityLabel(team.president)} — Budget: <strong>${team.budget.toFixed(1)}M€</strong>${Number.isFinite(team.wageBudgetCap) ? ` — Monte ingaggi: <strong>${formatMoneyK(annualSalary(getTeamWageBill(team)))}/${formatMoneyK(annualSalary(team.wageBudgetCap))}</strong>€/anno` : ''}`
@@ -4402,7 +5253,10 @@ function renderCoachScreenPlayerRow(entry, opts) {
   opts = opts || {};
   const { player: p, role: entryRole, fit, assignedSubRole } = entry;
   const rowClass = fit === 'outOfRole' ? ' md-oor' : fit === 'outOfPosition' ? ' md-oop' : '';
-  const fitTitle = fit === 'outOfRole' ? 'Fuori ruolo: 90% forza' : fit === 'outOfPosition' ? 'Fuori posizione: 95% forza' : '';
+  // Percentuali derivate da FIT_STRENGTH_MULT invece che scritte a mano (§
+  // stesso bug corretto in showMatchDetailModal: un valore vecchio dimenticato
+  // qui sarebbe rimasto invisibile finché qualcuno non l'avesse notato).
+  const fitTitle = fit === 'outOfRole' ? `Fuori ruolo: ${Math.round(FIT_STRENGTH_MULT.outOfRole * 100)}% forza` : fit === 'outOfPosition' ? `Fuori posizione: ${Math.round(FIT_STRENGTH_MULT.outOfPosition * 100)}% forza` : '';
   // Vedi buildCoachScreenPitchHtml: fallback alla prima posizione del ruolo
   // quando lo slot è stato tappato "fuori ruolo" (nessuna posizione
   // assegnata in quel caso).
@@ -5039,6 +5893,7 @@ function openStaffCard(staff, roleLabel) {
           <span>Forza: <strong>${staff.strength}</strong></span>
           <span>Squadra: <strong>${currentTeamName}</strong></span>
         </div>
+        ${staff.personality ? `<p style="margin:6px 0 10px;font-size:.88rem"><strong>Personalità: ${staff.personality.type}</strong><br><span style="color:#666">${staff.personality.description}</span>${staff.personality.bonusText ? `<br><span style="color:#15803d">▲ ${staff.personality.bonusText}</span>` : ''}${staff.personality.malusText ? `<br><span style="color:#b91c1c">▼ ${staff.personality.malusText}</span>` : ''}</p>` : ''}
         <h4>Carriera per stagione</h4>
         ${history.length === 0
       ? '<p class="db-empty">Nessuna storia disponibile</p>'
@@ -5101,6 +5956,7 @@ function serializeGame() {
     version: SAVE_VERSION,
     savedAt: Date.now(),
     seasonCount, nextPlayerId, seasonPhase, currentMatchday,
+    marketDisplaySeason, transferSeq,
     players,
     serieA: serieA.map(serializeTeam),
     serieB: serieB.map(serializeTeam),
@@ -5184,6 +6040,11 @@ function deserializeGame(snap) {
     nextPlayerId = snap.nextPlayerId || 0;
     seasonPhase = snap.seasonPhase || 0;
     currentMatchday = snap.currentMatchday || 0;
+    // Backfill salvataggi precedenti a questo fix: marketDisplaySeason assente
+    // → allinealo a seasonCount (comportamento equivalente a prima, nessuna
+    // tab Mercato vuota su un salvataggio vecchio).
+    marketDisplaySeason = snap.marketDisplaySeason ?? seasonCount;
+    transferSeq = snap.transferSeq || 0;
     freeAgents = (snap.freeAgents || []).map(id => playersById[id]).filter(Boolean);
     freeCoaches = snap.freeCoaches || [];
     freeDirectors = snap.freeDirectors || [];
@@ -5213,6 +6074,9 @@ function deserializeGame(snap) {
       }))
       .filter(l => l.player && l.homeTeam && l.loanTeam);
     pendingAIOffers = [];
+    pendingAILoanOffers = [];
+    playerTransferListed = new Set();
+    playerLoanListed = new Set();
     renewalInterest = new Map();
     pendingForeignScoutTargets = [];
 
@@ -5349,6 +6213,14 @@ function hirePlayerAsDS(team, years) {
     age: dsCareer.age, strength: dsCareer.reputation, maxStrength: 100,
     isHuman: true, history: dsCareer.history,
   };
+  // NOTA: una squadra ripescata dalla Serie D arriva qui con rosa vuota, ma
+  // NON riceve più un riempimento automatico — vedi la correzione alla radice
+  // in handlePromotionsAndRelegations (assegna una forza realistica invece del
+  // placeholder 20 del pool dormiente): con quella sola correzione, il
+  // consenso dei giocatori torna a funzionare normalmente, e costruire la
+  // rosa (Acquisti/Prestiti/Svincolati, PLAYER_ROSTER_MIN_TO_PROCEED=16 come
+  // vincolo prima di poter chiudere il mercato) è un vero mercato in entrata
+  // come per chiunque altro — non un riempimento istantaneo regalato.
   playerTeam = team;
   dsCareer.teamName = team.name;
   dsCareer.contractYears = years;
@@ -5402,9 +6274,13 @@ function startCareerMarketSession() {
       // mercato", poi lo scheduler a turni per forza DS (il player incluso
       // al suo posto), e solo a schedulazione conclusa la sessione libera.
       pendingAIOffers = [];
+      pendingAILoanOffers = [];
+      playerTransferListed = new Set();
+      playerLoanListed = new Set();
       pendingForeignScoutTargets = [];
       mmSessionRenewalDecisions = new Map();
       mmSessionOfferDecisions = new Map();
+      mmSessionLoanOfferDecisions = new Map();
       mmSessionBoughtIds = new Set();
       mmSessionSoldIds = new Set();
       sessionMovedPlayers = new Set();
@@ -6095,8 +6971,14 @@ function showTeamSelectionScreen() {
       <div class="career-name-form">
         <label>Nome<br><input type="text" id="ds-first-name" value="${def.firstName}"></label>
         <label>Cognome<br><input type="text" id="ds-last-name" value="${def.lastName}"></label>
+        <button class="mm-btn" id="ds-name-shuffle" type="button" title="Proponi un'altra combinazione">🎲 Altri nomi</button>
         <button class="mm-btn mm-confirm" id="ds-name-confirm">Avanti →</button>
       </div>`;
+    overlay.querySelector('#ds-name-shuffle').addEventListener('click', () => {
+      const suggestion = randomName();
+      overlay.querySelector('#ds-first-name').value = suggestion.firstName;
+      overlay.querySelector('#ds-last-name').value = suggestion.lastName;
+    });
     overlay.querySelector('#ds-name-confirm').addEventListener('click', () => {
       const firstName = overlay.querySelector('#ds-first-name').value.trim() || def.firstName;
       const lastName = overlay.querySelector('#ds-last-name').value.trim() || def.lastName;
@@ -6251,6 +7133,15 @@ const setObjectives = (sortedTeams, league) => {
       else team.objective = { description: 'Salvezza', maxRank: n - 4 };
     }
     team.objective.predictedRank = rank;
+    // Quanto la squadra è REALMENTE outlier nella sua lega quest'anno (z-score
+    // medio forza/budget/piazzamento, vedi computePreseasonPrevisioni) — non
+    // solo la fascia testuale (che resta a 4 gradini fissi per la UI/
+    // narrativa). getDsProfile lo legge per modulare l'ambizione in modo
+    // continuo: due squadre entrambe "Titolo/top 3" ma con margini di dominio
+    // diversissimi ora si comportano diversamente sul mercato, pur mostrando
+    // la stessa etichetta a schermo. Tipicamente in un range ±2/±3.
+    team.objective.dominance = team._previsioniDominance ?? 0;
+    delete team._previsioniDominance;
   });
 };
 
@@ -6284,33 +7175,13 @@ function runWinterAITransfers(onComplete = () => {}) {
   if (playerTeam) pendingTransferMarket = [...winterMarket];
 
   runTurnBasedMarket(() => {
-    // Mercato estero invernale, INDIPENDENTE dal mercato a turni sopra (stesso motivo
-  // del mercato estivo — prima l'acquisto estero era sepolto in fondo alla
-  // catena, raggiungibile solo se sia il mercato normale sia gli svincolati
-  // fallivano, risultando de facto sempre a zero in una sola passata).
-  aiTeams.forEach(team => {
-    if (team.leagueLevel !== 'A' || !canBuyForeignPlayer(team)) return;
-    if (team.budget < 3) return;
-    const foreignWinterSkipChance = Math.max(0.15, Math.min(0.55, 0.30 * getMarketAggressiveness(team)));
-    if (Math.random() > foreignWinterSkipChance) return;
-    __recordMarketAttempt(team);
-    const cand = generateForeignCandidate();
-    if (canAddRole(team, cand.role) && canTeamAcquirePlayer(team, cand) && canRebalanceForDeal(team, cand.cost, cand.salary)) {
-      const ev = evaluateTransferTarget(team, cand, cand.cost);
-      if (ev && __marketStatsSink) __marketStatsSink.push({ team: team.name, gain: ev.gain, cost: ev.cost, score: ev.score });
-      if (ev && ev.gain > 0) {
-        const player = materializeForeignCandidate(cand, team);
-        commitRebalanceForDeal(team, cand.cost, cand.salary);
-        team.roster.push(player);
-        team.budget -= cand.cost;
-        recalculateTeamStrength(team);
-        transferLog.push(`❄️ <em>Mercato invernale</em>: <strong>${team.name}</strong> acquista ${player.firstName} ${player.lastName} (${player.age} anni, Forza: ${player.strength}) da <strong>${cand.fromClub}</strong> per <strong>${cand.cost.toFixed(1)}M€</strong>`);
-      }
-    }
-  });
-
+    // Il mercato estero (invernale ed estivo) è ora parte integrante dello
+    // scheduler a turni sopra (vedi computeForeignSignupOption/executeForeignSignupOption
+    // in getMarketTurnOptions/takeTurnMarketAction) — prima era un blocco
+    // isolato qui, fuori dallo scheduler, con partecipazione a caso e un solo
+    // candidato per squadra: § discussione esplicita con l'utente.
     onComplete();
-  }, 20); // maxRounds più basso dell'estivo: mercato invernale storicamente più corto/meno mosso
+  }, 30); // maxRounds più basso dell'estivo (§ discussione esplicita con l'utente: 30 giorni invernali contro 60 estivi)
 }
 
 // ── MODAL MERCATO INVERNALE (solo per playerTeam) ─────────────────────────────
@@ -6338,9 +7209,21 @@ function matchesPriceFilter(price, f) {
 // Selettore durata contratto (1-5 anni) — usato ovunque il DS firma un nuovo
 // contratto (rinnovi, firme di svincolati, ingaggio allenatore) lasciando la
 // scelta al giocatore invece di sorteggiarla.
-function durationSelectHtml(dataAttr, id, selectedYears) {
-  const sel = (selectedYears >= 1 && selectedYears <= 5) ? selectedYears : 3;
-  const opts = [1, 2, 3, 4, 5].map(y => `<option value="${y}"${y === sel ? ' selected' : ''}>${y}a</option>`).join('');
+// minYears/maxYears di default (1-5) invariati per i chiamanti che non li
+// passano (gli allenatori, dove non esiste un vincolo di età/forza sulla
+// durata come per i giocatori). Per la firma di uno svincolato, invece,
+// passiamo il range REALE di getContractDurationRange(strength, age) — la
+// stessa funzione che già vincola rinnovi, precontratti e Area Scout: senza
+// questo, un diciottenne prodigio (che altrove non può mai avere meno di 5
+// anni) o un trentaseienne (che altrove non arriva mai a 5) potevano ricevere
+// nel menu a tendina qualunque durata da 1 a 5, un vincolo diverso da tutto
+// il resto del gioco solo per questo singolo punto di firma.
+function durationSelectHtml(dataAttr, id, selectedYears, minYears = 1, maxYears = 5) {
+  const defaultSel = Math.max(minYears, Math.min(3, maxYears));
+  const sel = (selectedYears >= minYears && selectedYears <= maxYears) ? selectedYears : defaultSel;
+  const years = [];
+  for (let y = minYears; y <= maxYears; y++) years.push(y);
+  const opts = years.map(y => `<option value="${y}"${y === sel ? ' selected' : ''}>${y}a</option>`).join('');
   return `<select ${dataAttr}="${id}" style="padding:3px 6px;border-radius:4px;border:1px solid var(--border-card);font-size:.78rem">${opts}</select>`;
 }
 
@@ -6413,6 +7296,52 @@ function buildLoanFilterBar(f) {
   </div>`;
 }
 
+// Filtri della tab Panchina (forza/personalità/modulo — niente ruolo/
+// posizione/età, non si applicano a uno staff) e la loro variante di wiring:
+// tenuti separati da wireFilterBar perché le chiavi non numeriche
+// (personalità/modulo) sono selezioni testuali, non intervalli min/max.
+function buildCoachFilterBar(f) {
+  const optPersonality = (val, label) => `<option value="${val}"${f.personality === val ? ' selected' : ''}>${label}</option>`;
+  const optFormation = (val, label) => `<option value="${val}"${f.formation === val ? ' selected' : ''}>${label}</option>`;
+  return `<div class="mm-filters" style="margin-bottom:10px;padding:8px 10px;background:#f5f5f5;border:1px solid #ddd;border-radius:6px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;font-size:.82rem">
+    <strong>${icon('search')} Filtri:</strong>
+    <label>Forza
+      <input type="number" data-coach-filter="strMin" value="${f.strMin}" min="0" max="100" style="width:52px;margin-left:4px"> -
+      <input type="number" data-coach-filter="strMax" value="${f.strMax}" min="0" max="100" style="width:52px">
+    </label>
+    <label>Personalità
+      <select data-coach-filter="personality" style="margin-left:4px">
+        ${optPersonality('', 'Tutte')}${COACH_PERSONALITIES.map(p => optPersonality(p.type, p.type)).join('')}
+      </select>
+    </label>
+    <label>Modulo
+      <select data-coach-filter="formation" style="margin-left:4px">
+        ${optFormation('', 'Tutti')}${FORMATION_NAMES.map(f2 => optFormation(f2, f2)).join('')}
+      </select>
+    </label>
+    <button class="mm-btn" data-action="coach-filter-reset" style="padding:2px 10px;font-size:.8rem">Reset</button>
+  </div>`;
+}
+function wireCoachFilterBar(overlay, filter, render) {
+  overlay.querySelectorAll('[data-coach-filter]').forEach(el => {
+    el.addEventListener('change', () => {
+      const key = el.dataset.coachFilter;
+      if (key === 'personality' || key === 'formation') {
+        filter[key] = el.value;
+      } else {
+        filter[key] = Math.max(0, +el.value || 0);
+        if (key === 'strMin' && filter.strMax < filter.strMin) filter.strMax = filter.strMin;
+      }
+      render();
+    });
+  });
+  const resetBtn = overlay.querySelector('[data-action="coach-filter-reset"]');
+  if (resetBtn) resetBtn.addEventListener('click', () => {
+    filter.strMin = 0; filter.strMax = 100; filter.personality = ''; filter.formation = '';
+    render();
+  });
+}
+
 // Ogni campo MIN ha il proprio MAX corrispondente: se alzi il minimo oltre
 // il massimo, il massimo si alza per restare almeno uguale (mai il
 // contrario — solo questa direzione, come richiesto).
@@ -6472,9 +7401,13 @@ function finishAndata() {
   // altrimenti sopravvivrebbero (sbagliando) dalla sessione estiva precedente.
   if (playerTeam) {
     pendingAIOffers = [];
+    pendingAILoanOffers = [];
+    playerTransferListed = new Set();
+    playerLoanListed = new Set();
     pendingForeignScoutTargets = [];
     mmSessionRenewalDecisions = new Map();
     mmSessionOfferDecisions = new Map();
+    mmSessionLoanOfferDecisions = new Map();
     mmSessionBoughtIds = new Set();
     mmSessionSoldIds = new Set();
     sessionMovedPlayers = new Set();
@@ -6629,7 +7562,14 @@ document.getElementById('simulaStagione').addEventListener('click', function () 
         // (signedSalary) e la durata scelta allora (signedDuration, 1-5
         // anni come gli altri ingaggi — fallback alla durata casuale di
         // createContract solo per salvataggi precedenti senza questo campo).
-        if (dest && dest.roster && !dest.roster.includes(player)) {
+        // Tetto stranieri: come in resolvePreContractDeparture, l'unico
+        // vincolo ri-controllato ORA anche qui (§ bug segnalato dall'utente:
+        // un precontratto poteva far arrivare uno straniero anche in una
+        // squadra retrocessa in B/C, o già al tetto per altri precontratti
+        // firmati nello stesso turno) — budget/monte ingaggi restano invece
+        // intenzionalmente non ri-condizionati, vedi commento sopra.
+        const destEligible = dest && dest.roster && (player.nationality === 'IT' || canBuyForeignPlayer(dest));
+        if (destEligible && !dest.roster.includes(player)) {
           const newContract = createContract(player.strength, player.age);
           newContract.salary = signedSalary ?? newContract.salary;
           newContract.duration = signedDuration ?? newContract.duration;
@@ -6638,6 +7578,8 @@ document.getElementById('simulaStagione').addEventListener('click', function () 
           touchedTeams.add(dest);
           recordTransfer(player, dest.name, 0);
           transferLog.push(`✍️ Pre-contratto: <strong>${player.firstName} ${player.lastName}</strong> arriva a <strong>${dest.name}</strong> (parametro zero, ${formatMoneyK(annualSalary(newContract.salary))}€/anno)`);
+        } else if (dest && dest.roster && dest.roster.includes(player)) {
+          // Già presente (caso raro di doppia esecuzione): nessuna azione.
         } else {
           // Nessuna destinazione valida (es. squadra non più esistente): il
           // giocatore resta svincolato — unico caso residuo, non più i tetti
@@ -6852,9 +7794,13 @@ document.getElementById('simulaStagione').addEventListener('click', function () 
         // trascinarsi dalla stagione precedente.
         if (playerTeam) {
           pendingAIOffers = [];
+          pendingAILoanOffers = [];
+          playerTransferListed = new Set();
+          playerLoanListed = new Set();
           pendingForeignScoutTargets = [];
           mmSessionRenewalDecisions = new Map();
           mmSessionOfferDecisions = new Map();
+          mmSessionLoanOfferDecisions = new Map();
           mmSessionBoughtIds = new Set();
           mmSessionSoldIds = new Set();
           sessionMovedPlayers = new Set();
@@ -7022,6 +7968,17 @@ function releaseTeamToFreeAgency(team) {
   team.leagueLevel = 'D';
 }
 
+// Forza assegnata a una squadra appena ripescata dalla Serie D — livello del
+// fondo Serie C reale, non il placeholder 20 del pool dormiente (troppo
+// debole per farsi accettare da QUALUNQUE giocatore vero, vedi
+// estimatePlayerJoinChance). Alzato da 40 a 45 (§ discussione esplicita con
+// l'utente, dopo test su più simulazioni): a 40 si trovavano troppo pochi
+// giocatori disposti a firmare — il tier di obiettivo "Salvezza" (tipico di
+// una neopromossa) applica comunque una forte penalità di consenso a
+// prescindere dalla forza esatta, quindi serve un margine in più per
+// convincere un numero sufficiente di candidati durante il mercato a turni.
+const PROMOTED_FROM_D_STRENGTH = 45;
+
 function handlePromotionsAndRelegations(standingsA, standingsB, standingsC, currentSerieA, currentSerieB, currentSerieC) {
   const NUM_TEAMS_PROMOTION_RELEGATION = 4;
 
@@ -7051,21 +8008,35 @@ function handlePromotionsAndRelegations(standingsA, standingsB, standingsC, curr
   // Le retrocesse in D svincolano tutto — vedi releaseTeamToFreeAgency.
   relegatedFromCToD.forEach(releaseTeamToFreeAgency);
 
-  // Pool D: quelle già dormienti + le 4 appena arrivate dalla C (fino a 14) —
-  // 4 vengono ripescate in C A CASO (nessun criterio di forza/rendimento,
-  // la D non è mai simulata), le restanti 10 tornano/restano nel pool.
-  const dPool = [...serieD, ...relegatedFromCToD];
-  shuffleArray(dPool);
-  const promotedFromDToC = dPool.slice(0, NUM_TEAMS_PROMOTION_RELEGATION);
+  // Pool D — il ripesco pesca SOLO tra chi era già dormiente da prima di
+  // questo ciclo (fino a 10), MAI tra le 4 appena retrocesse in questo stesso
+  // giro (bug segnalato dall'utente: prima il pool di pesca era
+  // [...serieD, ...relegatedFromCToD], quindi una squadra poteva retrocedere
+  // e venire ripescata nello stesso istante, azzerando di fatto ogni
+  // conseguenza reale della retrocessione — la rosa veniva svincolata da
+  // releaseTeamToFreeAgency e la squadra tornava comunque in C, tutto
+  // invisibile allo stesso ciclo). Le neo-retrocesse si aggiungono al pool
+  // SOLO per i cicli futuri, dopo aver scontato almeno una stagione da dormienti.
+  shuffleArray(serieD);
+  const promotedFromDToC = serieD.slice(0, NUM_TEAMS_PROMOTION_RELEGATION);
   const promotedFromDNames = new Set(promotedFromDToC.map(t => t.name));
-  serieD = dPool.filter(t => !promotedFromDNames.has(t.name));
-  // Senza questo, una squadra retrocessa in D e ripescata a caso nello STESSO
-  // ciclo (es. relegata da C e subito ripromossa) restava con leagueLevel='D'
-  // (impostato da releaseTeamToFreeAgency) fino al fixup generale in
-  // updateTeamStrengths, molto più avanti nella sequenza — nel frattempo la
-  // finestra di valutazione DS/offerte di lavoro la mostrava con badge "Serie
-  // D" pur essendo già correttamente dentro l'array serieC.
-  promotedFromDToC.forEach(t => t.leagueLevel = 'C');
+  serieD = [...serieD.filter(t => !promotedFromDNames.has(t.name)), ...relegatedFromCToD];
+  promotedFromDToC.forEach(t => {
+    t.leagueLevel = 'C';
+    // Correzione alla radice (§ discussione esplicita con l'utente): la squadra
+    // arriva con rosa vuota e team.strength ancora al placeholder del pool
+    // dormiente (20, main.js bootstrap serieD) — molto più debole di
+    // QUALUNQUE giocatore vero, quindi estimatePlayerJoinChance negava il
+    // consenso a chiunque (gap enorme) durante il mercato a turni. La CPU non
+    // se ne accorgeva solo perché ensureMinRoster (bypassa il consenso) la
+    // riempiva comunque a fine sessione — un riempimento istantaneo, MAI un
+    // vero mercato in entrata. Assegnandole subito una forza realistica
+    // (livello del fondo Serie C, coerente col commento originale mai
+    // rispettato) il consenso torna a funzionare da subito: la squadra
+    // compete per davvero nel mercato a turni — svincolati, acquisti,
+    // precontratti — sia che la prenda in mano una CPU sia il player.
+    t.strength = PROMOTED_FROM_D_STRENGTH;
+  });
 
   // Costruisci le nuove leghe
   const newSerieA = currentSerieA.filter(t => !relegatedFromANames.includes(t.name)).concat(promotedFromBToA);
@@ -7175,6 +8146,27 @@ function openRenewalGate(players, winter, onDone) {
   showManagerMarketModal(null, null, { players, winter, onGateDone: onDone });
 }
 
+// Tetto "morbido" di categoria per il carry-over di fine stagione (§ STEP 5b
+// più sotto) — ricalibrato sui dati osservati in 50 stagioni simulate DOPO le
+// riforme economiche di questa conversazione (λ, colpo opportunistico,
+// buonuscita), non sui vecchi 400/120/40 del documento di design originale
+// (mai realmente implementati, e comunque scritti prima che l'economia del
+// gioco raggiungesse questa scala).
+const BUDGET_CARRYOVER_CAP = { A: 400, B: 150, C: 50 };
+// Quota della sola parte di budget OLTRE il tetto che si riassorbe ogni
+// stagione — non il 100% (sarebbe un muro rigido, un taglio di colpo), un
+// valore intermedio che fa convergere un caso estremo verso il tetto in
+// una decina di stagioni circa.
+const BUDGET_CARRYOVER_DECAY = 0.35;
+function applyBudgetCarryOverDecay(team) {
+  const cap = BUDGET_CARRYOVER_CAP[team.leagueLevel];
+  if (!cap || !(team.budget > cap)) return;
+  const excess = team.budget - cap;
+  const reclaimed = Math.round(excess * BUDGET_CARRYOVER_DECAY * 10) / 10;
+  team.budget = Math.round((team.budget - reclaimed) * 10) / 10;
+  transferLog.push(`📉 <strong>${team.name}</strong>: il tesoretto accumulato supera il tetto di Serie ${team.leagueLevel} (${cap}M€) — il presidente ne reinveste/distribuisce <strong>${reclaimed.toFixed(1)}M€</strong>, budget sceso a ${team.budget.toFixed(1)}M€`);
+}
+
 function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newSerieB, newSerieC, onComplete) {
   // Inizio di un nuovo ciclo di mercato: da qui transferLog riparte pulito.
   // Prima si azzerava a inizio stagione (FASE 0), PRIMA che l'utente avesse
@@ -7184,6 +8176,11 @@ function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newS
   transferLog = [];
   winterMarketStartAt = null;
   currentMarketIsWinter = false;
+  // Stesso momento esatto: da qui la tab Mercato della scheda squadra passa
+  // a mostrare la stagione NUOVA (vedi buildTeamMarketMoves) — non più
+  // seasonCount "live" (già incrementato a fine stagione precedente, PRIMA
+  // che il mercato vero e proprio iniziasse).
+  marketDisplaySeason = seasonCount;
 
   const allTeams = [...newSerieA, ...newSerieB, ...newSerieC];
   const newSerieANames = new Set(newSerieA.map(t => t.name));
@@ -7331,10 +8328,16 @@ function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newS
     const roll = Math.random();
     if (roll < 0.30) {
       const staff = retiredPlayerToStaff(p);
+      staff.personality = randomCoachPersonality();
+      // I moduli erano già stati pescati SENZA restrizione dentro
+      // retiredPlayerToStaff (che non sa ancora se diventerà coach o DS) —
+      // ora che sappiamo la personalità, li ripeschiamo coerenti con essa.
+      staff.formations = pickFormationPairForPersonality(staff.personality.type);
       freeCoaches.push(staff);
       transferLog.push(`🎓 ${p.firstName} ${p.lastName} si ritira da svincolato (${p.age} anni, Forza: ${p.strength}) e inizia la carriera da <strong>allenatore</strong>`);
     } else if (roll < 0.50) {
       const staff = retiredPlayerToStaff(p);
+      staff.personality = randomDsPersonality();
       freeDirectors.push(staff);
       transferLog.push(`🎓 ${p.firstName} ${p.lastName} si ritira da svincolato (${p.age} anni, Forza: ${p.strength}) e inizia la carriera da <strong>direttore sportivo</strong>`);
     } else {
@@ -7579,10 +8582,13 @@ function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newS
       const roll = Math.random();
       if (roll < 0.30) {
         const staff = retiredPlayerToStaff(p);
+        staff.personality = randomCoachPersonality();
+        staff.formations = pickFormationPairForPersonality(staff.personality.type);
         freeCoaches.push(staff);
         transferLog.push(`🎓 ${p.firstName} ${p.lastName} si ritira da <strong>${team.name}</strong> (${p.age} anni, Forza: ${p.strength}) e inizia la carriera da <strong>allenatore</strong>`);
       } else if (roll < 0.50) {
         const staff = retiredPlayerToStaff(p);
+        staff.personality = randomDsPersonality();
         freeDirectors.push(staff);
         transferLog.push(`🎓 ${p.firstName} ${p.lastName} si ritira da <strong>${team.name}</strong> (${p.age} anni, Forza: ${p.strength}) e inizia la carriera da <strong>direttore sportivo</strong>`);
       } else {
@@ -7599,18 +8605,59 @@ function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newS
   });
 
   // --- STEP 3: RILASCIO ECCEDENZE (rosa > ROSTER_MAX_TOTAL) ---
+  // Prima era un rilascio a freddo: sceglieva SOLO il più debole del ruolo in
+  // eccesso e lo regalava agli svincolati, senza nessuna delle protezioni già
+  // in vigore nello sfoltimento del mercato a turni — un campione poteva
+  // finire gratis se capitava di essere il più debole di un ruolo
+  // sovraffollato in una rosa già fortissima (scoperto analizzando 50
+  // stagioni simulate: buona parte dei presunti "svincoli di mercato" erano
+  // in realtà innescati qui, non dallo sfoltimento riformato). Ora usa le
+  // STESSE protezioni: i giocatori elite (isEliteForTeam) sono scelti per
+  // ultimi, e prima del rilascio si tenta sempre vendita → prestito, come
+  // executeDisposalOption. A differenza dello sfoltimento a turni, però, qui
+  // il tetto di rosa è un vincolo RIGIDO senza un turno successivo in cui
+  // riprovare: se né vendita né prestito funzionano, il rilascio resta
+  // l'ultima risorsa comunque, anche con anni di contratto residui.
   allTeams.forEach(team => {
     if (playerTeam && team === playerTeam) return; // Il giocatore gestisce la propria rosa nel modal
+    const ctx3 = { allTeams };
     while (team.roster.length > ROSTER_MAX_TOTAL) {
       const overRole = Object.keys(ROLE_MAX).find(r => roleCount(team.roster, r) > ROLE_MAX[r]);
       const pool = overRole
         ? team.roster.filter(p => p.role === overRole)
         : team.roster.filter(p => p.role !== 'POR');
-      const weakest = pool.sort((a, b) => a.strength - b.strength)[0];
-      if (!weakest) break;
-      team.roster = team.roster.filter(p => p !== weakest);
-      freeAgents.push(weakest);
-      transferLog.push(`📤 <strong>${team.name}</strong> svincola ${weakest.firstName} ${weakest.lastName} (${weakest.age} anni, Forza: ${weakest.strength})`);
+      if (!pool.length) break;
+      // Non-elite e più deboli per primi: un campione entra in questa coda
+      // solo se non resta alcuna alternativa nel ruolo sovraffollato.
+      const candidate = pool.slice().sort((a, b) => {
+        const aElite = isEliteForTeam(a, team) ? 1 : 0;
+        const bElite = isEliteForTeam(b, team) ? 1 : 0;
+        return (aElite - bElite) || (a.strength - b.strength);
+      })[0];
+
+      const sale = findBuyerForSurplusPlayer(candidate, team, ctx3);
+      if (sale && sale.buyer.roster.length < ROSTER_MAX_TOTAL) {
+        team.roster = team.roster.filter(p => p !== candidate);
+        sale.buyer.roster.push(candidate);
+        team.budget += sale.price;
+        sale.buyer.budget -= sale.price;
+        recalculateTeamStrength(sale.buyer);
+        recordTransfer(candidate, sale.buyer.name, sale.price);
+        transferLog.push(`${icon('cycle')} <strong>${team.name}</strong> → <strong>${sale.buyer.name}</strong>: ${candidate.firstName} ${candidate.lastName} (${candidate.age} anni, Forza: ${candidate.strength}) per <strong>${sale.price.toFixed(1)}M€</strong> <em>(rosa sovradimensionata)</em>`);
+        continue;
+      }
+      const dest = findLoanDestination(candidate, team);
+      if (dest) {
+        team.roster = team.roster.filter(p => p !== candidate);
+        dest.roster.push(candidate);
+        activeLoans.push({ player: candidate, homeTeam: team, loanTeam: dest });
+        recalculateTeamStrength(dest);
+        transferLog.push(`${icon('cycle')} <strong>${team.name}</strong> presta ${candidate.firstName} ${candidate.lastName} a <strong>${dest.name}</strong> <em>(rosa sovradimensionata)</em>`);
+        continue;
+      }
+      team.roster = team.roster.filter(p => p !== candidate);
+      freeAgents.push(candidate);
+      transferLog.push(`📤 <strong>${team.name}</strong> svincola ${candidate.firstName} ${candidate.lastName} (${candidate.age} anni, Forza: ${candidate.strength})`);
     }
     recalculateTeamStrength(team);
   });
@@ -7690,6 +8737,25 @@ function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newS
   applyFinances(standingsB, 'B');
   applyFinances(standingsC, 'C');
 
+  // --- STEP 5b: TETTO MORBIDO AL CARRY-OVER (§ discussione esplicita con
+  // l'utente, dopo 50 stagioni simulate: budget fino a 1.4 miliardi senza
+  // alcun freno — §3 REGOLE_CALCIOMERCATO dichiarava un tetto "400M/120M/40M
+  // riapplicato ogni sessione" che però non esisteva da nessuna parte nel
+  // codice: il carry-over era sempre stato totale e senza limite reale). Non
+  // un muro rigido — taglierebbe di colpo una squadra da 1.4B€ a 400M€ in un
+  // solo turno, stravolgendone di schianto le prospettive di mercato — ma un
+  // decadimento morbido: ogni stagione si riassorbe solo una QUOTA
+  // (BUDGET_CARRYOVER_DECAY) della parte di budget OLTRE il tetto di lega,
+  // mai sotto il tetto, mai sotto zero. Un caso estremo converge verso il
+  // tetto in una decina di stagioni circa, invece di un taglio istantaneo.
+  // Si applica a TUTTE le squadre (CPU e umano): è una correzione strutturale
+  // dell'economia, non una questione di "chi gestisce la rosa" come
+  // ensureMinRoster — esentare il player vanificherebbe il senso della
+  // correzione. Usa team.leagueLevel già aggiornato da handlePromotions-
+  // AndRelegations, quindi una squadra appena promossa/retrocessa viene
+  // subito misurata sul tetto della sua nuova lega. ──
+  allTeams.forEach(applyBudgetCarryOverDecay);
+
   // --- STEP 5.5: VENDITE FORZATE PER BILANCIO NEGATIVO ---
   // Si applica alle squadre AI. La squadra del giocatore gestisce le vendite nel modal estivo.
   // Vende a un acquirente VERO (stessa ricerca/stesso sconto 0.60-0.90×
@@ -7759,33 +8825,9 @@ function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newS
   openRenewalGate(pendingRenewals, false, () => {
   runTurnBasedMarket(() => {
 
-  // 6b-bis: mercato estero, INDIPENDENTE dal mercato a turni sopra (non richiede
-  // che gli acquisti domestici siano falliti, né i loro gate di partecipazione
-  // 35%/avgStr — prima l'acquisto estero era sepolto in fondo alla catena e
-  // finiva per non succedere quasi mai, specie nel mercato invernale a una
-  // sola passata). Ogni squadra di Serie A sotto il tetto di 3 stranieri ha
-  // una possibilità dedicata, una volta a fine mercato estivo.
-  allTeams.forEach(team => {
-    if (playerTeam && team === playerTeam) return;
-    if (team.leagueLevel !== 'A' || !canBuyForeignPlayer(team)) return;
-    if (team.budget < 3) return;
-    const foreignSkipChance = Math.max(0.25, Math.min(0.75, 0.45 * getMarketAggressiveness(team)));
-    if (Math.random() > foreignSkipChance) return; // partecipazione modulata da ambizione/generosità presidente
-    __recordMarketAttempt(team);
-    const cand = generateForeignCandidate();
-    if (canAddRole(team, cand.role) && canTeamAcquirePlayer(team, cand) && canRebalanceForDeal(team, cand.cost, cand.salary)) {
-      const ev = evaluateTransferTarget(team, cand, cand.cost);
-      if (ev && __marketStatsSink) __marketStatsSink.push({ team: team.name, gain: ev.gain, cost: ev.cost, score: ev.score });
-      if (ev && ev.gain > 0) {
-        const player = materializeForeignCandidate(cand, team);
-        commitRebalanceForDeal(team, cand.cost, cand.salary);
-        team.roster.push(player);
-        team.budget -= cand.cost;
-        recalculateTeamStrength(team);
-        transferLog.push(`${icon('money')} <strong>${team.name}</strong> acquista ${player.firstName} ${player.lastName} (${player.age} anni, Forza: ${player.strength}) da <strong>${cand.fromClub}</strong> per <strong>${cand.cost.toFixed(1)}M€</strong>`);
-      }
-    }
-  });
+  // Il mercato estero (vedi computeForeignSignupOption/executeForeignSignupOption)
+  // è ora parte dello scheduler a turni sopra, valutato AD OGNI TURNO invece che
+  // in un blocco isolato qui a fine sessione — § discussione esplicita con l'utente.
 
   // --- STEP 6d: POACHING PER BLASONE ---
   // Cascata naturale: A compra da B, B compra da C — chi ha soldi migliora la rosa
@@ -7903,7 +8945,12 @@ function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newS
       const needed = neededRoles(team);
       const faIdx = freeAgents
         .map((p, i) => ({ p, i }))
-        .filter(({ p }) => p.strength <= maxFAStr && canAddRole(team, p.role))
+        // § bug segnalato dall'utente: mancava canTeamAcquirePlayer qui, unico
+        // punto di completamento rosa a fine stagione che pescava svincolati
+        // senza rispettare il tetto stranieri (né il divieto per B/C) —
+        // squadre finivano con più di 3 stranieri, o ne prendevano uno pur
+        // essendo in Serie B/C.
+        .filter(({ p }) => p.strength <= maxFAStr && canAddRole(team, p.role) && canTeamAcquirePlayer(team, p))
         .sort((a, b) => {
           // preferisci FA di ruoli necessari
           const aNeed = needed.includes(a.p.role) ? 1 : 0;
@@ -7962,10 +9009,155 @@ function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newS
 // costruita. Di default false per non alterare mai una sessione normale.
 let TURN_MARKET_AUTO_PLAY_HUMAN = false;
 
+// ─── LOG DEL "PENSIERO DEL DS" ────────────────────────────────────────────────
+// Traccia leggibile del ragionamento di ogni DS CPU: come legge la rosa, come
+// legge il bilancio, quali bersagli confronta e PERCHÉ ne sceglie uno invece di
+// un altro. Spento di default (costa stringhe a ogni turno); si accende da
+// console senza ricaricare la pagina:
+//
+//   DS_THOUGHT_LOG.enabled = true                    // tutte le 60 squadre
+//   DS_THOUGHT_LOG.teamFilter = 'Juventus'           // una sola
+//   DS_THOUGHT_LOG.teamFilter = ['Juventus','Milan'] // alcune
+//   printDsThoughts('Juventus')                      // rilegge quanto raccolto
+//   dsThoughts                                       // array grezzo
+//
+// Nessuna riga di questo blocco incide sulla logica di mercato: è pura
+// osservazione, esattamente come lo era il vecchio turnMarketLog (che però era
+// un no-op e non mostrava più niente).
+const DS_THOUGHT_LOG = {
+  enabled: false,
+  teamFilter: null,   // null = tutte le squadre; 'Juventus' o ['Juventus','Milan']
+  dsFilter: null,     // null = tutti i DS; 'Marotta' o ['Marotta','Giuntoli']
+  toConsole: true,
+  maxEntries: 5000,
+};
+const dsThoughts = [];
+let __dsLogRound = 0;
+
+// Confronto tollerante: accetta stringa singola o array, ignora maiuscole e
+// spazi, e fa match parziale — così 'juve' basta per 'Juventus' e 'rossi' per
+// il DS 'Mario Rossi', senza dover azzeccare il nome esatto.
+function dsFilterMatches(filter, ...names) {
+  if (!filter) return null; // nessun filtro impostato
+  const wanted = (Array.isArray(filter) ? filter : [filter]).map(f => String(f).toLowerCase().trim());
+  const haystack = names.filter(Boolean).map(n => String(n).toLowerCase());
+  return wanted.some(w => haystack.some(h => h.includes(w)));
+}
+
+function dsLogEnabledFor(team) {
+  if (!DS_THOUGHT_LOG.enabled || !team) return false;
+  const ds = team.ds;
+  const byTeam = dsFilterMatches(DS_THOUGHT_LOG.teamFilter, team.name);
+  const byDs = dsFilterMatches(DS_THOUGHT_LOG.dsFilter,
+    ds && `${ds.firstName} ${ds.lastName}`, ds && ds.lastName);
+  // Nessuno dei due filtri impostato → passano tutte le squadre.
+  if (byTeam === null && byDs === null) return true;
+  // Filtri impostati → basta che UNO dei due corrisponda (OR), così si possono
+  // osservare insieme "la Juventus" e "quel DS che mi interessa ovunque vada".
+  return byTeam === true || byDs === true;
+}
+
+// Scorciatoia unica per accendere l'osservazione durante una partita vera:
+// accetta indifferentemente il nome di una squadra o quello di un DS.
+//   watchDs('Juventus')   ·   watchDs('Rossi')   ·   watchDs(['Juventus','Milan'])
+//   watchDs()             → spegne tutto
+function watchDs(query) {
+  if (!query) {
+    DS_THOUGHT_LOG.enabled = false;
+    DS_THOUGHT_LOG.teamFilter = DS_THOUGHT_LOG.dsFilter = null;
+    console.log('Log del pensiero del DS: SPENTO.');
+    return;
+  }
+  DS_THOUGHT_LOG.enabled = true;
+  DS_THOUGHT_LOG.teamFilter = query;
+  DS_THOUGHT_LOG.dsFilter = query;
+  // Riepilogo di cosa si è appena agganciato, per accorgersi subito di un
+  // nome scritto male invece di scoprire a mercato finito che il log è vuoto.
+  const matched = [...serieA, ...serieB, ...serieC].filter(t => dsLogEnabledFor(t));
+  if (!matched.length) {
+    console.warn(`Nessuna squadra/DS corrisponde a "${query}" — log acceso ma non registrerà nulla.`);
+    return;
+  }
+  matched.forEach(t => console.log(`  osservo ${t.name} — DS ${t.ds ? `${t.ds.firstName} ${t.ds.lastName} (forza ${t.ds.strength})` : '—'}`));
+  console.log(`Log acceso su ${matched.length} squadra/e. A mercato finito: printDsThoughts()`);
+}
+
+const DS_LOG_STYLE = {
+  analisi:   'color:#0891b2',
+  bilancio:  'color:#ca8a04',
+  confronto: 'color:#7c3aed',
+  scelta:    'color:#16a34a;font-weight:bold',
+  scarto:    'color:#94a3b8',
+  azione:    'color:#0f172a;font-weight:bold',
+};
+
+function dsLog(team, kind, text) {
+  if (!dsLogEnabledFor(team)) return;
+  dsThoughts.push({ round: __dsLogRound, team: team.name, kind, text });
+  if (dsThoughts.length > DS_THOUGHT_LOG.maxEntries) dsThoughts.shift();
+  if (DS_THOUGHT_LOG.toConsole) {
+    console.log(`%c[G${__dsLogRound}] ${team.name} · ${kind.toUpperCase()} — ${text}`, DS_LOG_STYLE[kind] || '');
+  }
+}
+
+// Rilegge il log raccolto, opzionalmente filtrato per squadra.
+function printDsThoughts(teamName) {
+  const rows = teamName ? dsThoughts.filter(t => t.team === teamName) : dsThoughts;
+  if (!rows.length) { console.log('Nessun pensiero registrato (DS_THOUGHT_LOG.enabled = true per attivare).'); return; }
+  rows.forEach(r => console.log(`%c[G${r.round}] ${r.team} · ${r.kind.toUpperCase()} — ${r.text}`, DS_LOG_STYLE[r.kind] || ''));
+  return rows.length + ' righe';
+}
+
+// Come il DS legge la propria CASSA: i due tetti separati, il margine reale e
+// soprattutto λ — quanto "sente" un milione. È il numero che spiega perché due
+// squadre davanti allo stesso giocatore prendono decisioni opposte.
+function explainBudget(team) {
+  const profile = getDsProfile(team);
+  const wageBill = getTeamWageBill(team);
+  const wageRoom = Number.isFinite(team.wageBudgetCap) ? (team.wageBudgetCap - wageBill) : Infinity;
+  const lambda = profile.moneyWeight;
+  const attitude = lambda <= 0.08 ? 'può permettersi il colpo grosso'
+    : lambda <= 0.35 ? 'può investire con criterio'
+    : lambda <= 0.8 ? 'deve cercare occasioni'
+    : 'praticamente solo parametri zero e giovani';
+  return `cassa ${team.budget.toFixed(1)}M€ · monte ingaggi ${Math.round(wageBill)}/${Number.isFinite(team.wageBudgetCap) ? Math.round(team.wageBudgetCap) : '∞'}k€ (margine ${wageRoom === Infinity ? '∞' : Math.round(wageRoom) + 'k€'}) · λ=${lambda.toFixed(3)} → ${attitude}`;
+}
+
+// Come il DS legge la propria ROSA: obiettivo di stagione, tratti decisionali,
+// e i buchi individuati con la loro gravità.
+function explainSquad(team) {
+  const profile = getDsProfile(team);
+  const { starters, reserves } = getSquadTiers(team);
+  const surplus = getSquadSurplus(team);
+  const listed = getTransferListedPlayers(team);
+  const unsettled = listed.filter(l => l.tier === 'unsettled');
+  const parts = [
+    `rosa ${team.roster.length} (${starters.size} titolari, ${reserves.size} riserve, ${surplus.length} esuberi)`,
+    `forza media ${team.strength}`,
+    `obiettivo tier ${profile.tier}/12`,
+    `DS forza ${profile.dsStrength} (rumore ±${(profile.riskNoise * 100).toFixed(0)}%, osserva ${profile.scoutingWidth} bersagli)`,
+    `indole: ambizione ${(profile.ambition * 100).toFixed(0)}%, futuro ${(profile.futureWeight * 100).toFixed(0)}%, giovani ${(profile.youthBias * 100).toFixed(0)}%`,
+  ];
+  if (unsettled.length) {
+    parts.push(`⚠ ${unsettled.length} scontenti in rosa (${unsettled.map(u => `${u.player.lastName} ${u.player.strength}`).join(', ')})`);
+  }
+  return parts.join(' · ');
+}
+
+function explainNeeds(needs) {
+  if (!needs.length) return 'nessun buco di rosa';
+  return needs.map(n => {
+    const why = n.isReserveGap
+      ? (n.severity === 25 ? 'nessun riservista' : 'panchina corta')
+      : (n.fit === 'outOfRole' ? 'ruolo scoperto in undici' : 'titolare fuori posizione');
+    return `${n.role} (${why}, gravità ${n.severity})`;
+  }).join(', ');
+}
+
+// Compatibilità: tutti i vecchi call site di turnMarketLog continuano a
+// funzionare e confluiscono nel nuovo log come righe di tipo "azione".
 function turnMarketLog(team, ...args) {
-  // no-op: era un log di debug filtrato su 3 squadre campione (Vicenza,
-  // Brescia, Padova), usato solo in fase di sviluppo del mercato a turni —
-  // non incideva mai sulla logica di acquisto/vendita, solo sulla console.
+  dsLog(team, 'azione', args.join(' '));
 }
 
 // Finestra bloccante "calciomercato in corso" mostrata mentre lo scheduler a
@@ -8069,8 +9261,8 @@ function hideMarketProgressBar() {
 // §0 REGOLE_CALCIOMERCATO: i "giri" dello scheduler sono anche "giorni di
 // mercato" — pura percezione del tempo che passa (non cambia la logica dei
 // turni), con date di calendario coerenti e un countdown di quanti giorni
-// restano. Estivo: 1° luglio → tanti giorni quanti maxRounds (40). Invernale:
-// 2 gennaio → tanti giorni quanti maxRounds (20).
+// restano. Estivo: 1° luglio → tanti giorni quanti maxRounds (60). Invernale:
+// 2 gennaio → tanti giorni quanti maxRounds (30).
 function formatMarketDay(round, maxRounds, isWinter) {
   const startMonth = isWinter ? 0 : 6; // gennaio=0, luglio=6 (Date, 0-based)
   const startDay = isWinter ? 2 : 1;
@@ -8197,7 +9389,14 @@ function leagueTierGap(teamA, teamB) {
 // negoziare — stessa identica formula/range di generateSellOffers (il tuo
 // "Vendi"), apposta, per non avvantaggiare CPU o umano l'uno sull'altro.
 function findBuyerForSurplusPlayer(player, sellingTeam, ctx) {
-  const price = Math.max(0.5, Math.round(getTransferValue(player) * (0.60 + Math.random() * 0.30) * 10) / 10);
+  // Lo sconto da "vendita per necessità" non può applicarsi indistintamente a
+  // chiunque: un club che si libera di un rincalzo non ha potere negoziale, ma
+  // chi ha in mano un campione sì — di pretendenti ne trova quanti ne vuole.
+  // Prima un 91 fuori dal modulo veniva svenduto al 60-90% come un qualsiasi
+  // esubero (osservato: Cattaneo, forza 91, ceduto a 62.5M€ per "fuori sistema
+  // tattico"). Ora la forbice si chiude man mano che il giocatore è forte
+  // rispetto alla squadra che lo cede.
+  const price = Math.max(0.5, Math.round(getTransferValue(player) * getForcedSaleMult(player, sellingTeam) * 10) / 10);
   let best = null;
   ctx.allTeams.forEach(buyer => {
     if (buyer === sellingTeam) return;
@@ -8223,6 +9422,101 @@ function findBuyerForSurplusPlayer(player, sellingTeam, ctx) {
 // — usata sia dalla CPU (che sceglie in automatico per priorità, vedi
 // takeTurnMarketAction) sia dalla UI del turno del player (che mostra le
 // stesse opzioni reali e lascia scegliere quale eseguire, o passare).
+// ─── COLPO OPPORTUNISTICO (oltre lo stretto bisogno) ──────────────────────────
+// Finora, appena i bisogni di rosa erano soddisfatti, la CPU non agiva più per
+// il resto della sessione, qualunque fosse il saldo in cassa — osservato in 50
+// stagioni simulate: club da centinaia di milioni fermi per l'intera carriera
+// perché "non c'era nulla da riparare". Un club VERAMENTE ricco e ambizioso
+// non ragiona così: se capita un'occasione di qualità vera, la coglie anche
+// senza un buco specifico da tappare, per consolidare un vantaggio invece di
+// limitarsi a non perdere terreno.
+//
+// Eleggibilità: non una soglia di budget assoluta (che varrebbe cifre diverse
+// per A/B/C e per momenti diversi della carriera) ma λ stesso — se il denaro è
+// già "quasi gratis" per questo club rispetto al proprio pavimento ambizione-
+// scalato (vedi getDsProfile), allora è abbastanza ricco da permetterselo,
+// in qualunque lega e in qualunque anno di carriera.
+const OPPORTUNISTIC_MIN_AMBITION = 0.65;
+const OPPORTUNISTIC_LAMBDA_CEILING = LAMBDA_MIN * 1.5;
+
+// ─── MERCATO ESTERO — dentro il mercato a turni (§ discussione esplicita con
+// l'utente) ──────────────────────────────────────────────────────────────────
+// Prima era un meccanismo ISOLATO (STEP 6b-bis), fuori dallo scheduler: un solo
+// tentativo a fine sessione, un solo candidato generato, partecipazione decisa
+// da un tiro di dado slegato dal valore reale dell'affare. Risultato
+// verificato: anche il club più aggressivo possibile tentava solo il 66% delle
+// sessioni, un colpo alla volta, per riempire un tetto di 3 stranieri — troppo
+// lento per uno sconto import (20-40% su cartellino E stipendio, forza 75-90)
+// che è quasi sempre un affare eccellente. Ora è un'opzione vera valutata AD
+// OGNI TURNO di una squadra di A con slot liberi, con PIÙ candidati generati e
+// confrontati (non uno solo, "prendere o lasciare"), soggetta alla stessa
+// disciplina economica di ogni altro acquisto (score netto > 0, λ compreso).
+const FOREIGN_CANDIDATES_PER_ATTEMPT = 4;
+
+function computeForeignSignupOption(team) {
+  if (team.leagueLevel !== 'A' || !canBuyForeignPlayer(team)) return null;
+  if (team.budget < 3) return null;
+  const candidates = [];
+  for (let i = 0; i < FOREIGN_CANDIDATES_PER_ATTEMPT; i++) {
+    const cand = generateForeignCandidate();
+    if (!canAddRole(team, cand.role) || !canTeamAcquirePlayer(team, cand)) continue;
+    if (!canRebalanceForDeal(team, cand.cost, cand.salary)) continue;
+    const ev = evaluateTransferTarget(team, cand, cand.cost);
+    if (!ev || ev.gain <= 0 || ev.score <= 0) continue;
+    candidates.push({ cand, ev });
+  }
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => b.ev.score - a.ev.score);
+  const { cand, ev } = candidates[0];
+  return { cand, cost: cand.cost, ev };
+}
+
+function executeForeignSignupOption(team, opt) {
+  const { cand, cost } = opt;
+  const player = materializeForeignCandidate(cand, team);
+  commitRebalanceForDeal(team, cost, cand.salary);
+  team.roster.push(player);
+  team.budget -= cost;
+  recalculateTeamStrength(team);
+  transferLog.push(`${icon('cycle')} <strong>${cand.fromClub}</strong> → <strong>${team.name}</strong>: ${player.firstName} ${player.lastName} (${player.age} anni, Forza: ${player.strength}) per <strong>${cost.toFixed(1)}M€</strong> <em>(estero)</em>`);
+  turnMarketLog(team, `ACQUISTA ESTERO ${player.firstName} ${player.lastName} (Forza ${player.strength}) da ${cand.fromClub} per ${cost.toFixed(1)}M€`);
+  return { buyer: team, seller: null };
+}
+
+function computeOpportunisticBuy(team, ctx) {
+  const profile = getDsProfile(team);
+  if (profile.ambition < OPPORTUNISTIC_MIN_AMBITION) return null;
+  if (profile.moneyWeight > OPPORTUNISTIC_LAMBDA_CEILING) return null;
+  if (team.roster.length >= ROSTER_MAX_TOTAL) return null;
+
+  // Stesso pool "titolari/riserve altrui listati o scontenti" dell'Opzione 1
+  // (getTransferListedPlayers), ma SENZA il filtro di bisogno di ruolo — qui
+  // si insegue il miglior upgrade assoluto disponibile, non un buco preciso.
+  // Solo titolari veri (wouldEnterBest11): un colpo opportunistico su un
+  // rincalzo non ha senso, l'obiettivo è consolidare un vantaggio vero.
+  const candidates = [];
+  ctx.allTeams.forEach(seller => {
+    if (seller === team || seller === playerTeam) return;
+    getTransferListedPlayers(seller).forEach(({ player, askMult }) => {
+      if (ctx.lockedPlayers.has(player)) return;
+      if (activeLoans.some(l => l.player === player)) return;
+      if (isPreContracted(player)) return;
+      if (!canAddRole(team, player.role) || !canTeamAcquirePlayer(team, player)) return;
+      if (!wouldEnterBest11(team, player)) return;
+      if ((player.contract?.duration ?? 99) <= 1) return;
+      const cost = Math.max(0.5, Math.round(getTransferValue(player) * askMult * 10) / 10);
+      if (!canRebalanceForDeal(team, cost, player.contract?.salary ?? getDisplaySalary(player.strength))) return;
+      if (Math.random() > estimatePlayerJoinChance(player, team)) return;
+      candidates.push({ player, cost, seller, reasonTag: 'colpo opportunistico' });
+    });
+  });
+  if (!candidates.length) return null;
+  // pickBestTransferTarget applica comunque la disciplina economica (score
+  // netto > 0): un club ricco non compra a vuoto, solo un upgrade che vale
+  // davvero il suo prezzo anche scontato dal λ già basso di questo club.
+  return pickBestTransferTarget(team, candidates, null, 'colpo opportunistico');
+}
+
 function getMarketTurnOptions(team, ctx) {
   // "Bisogno" non è solo "mi manca un ruolo" — anche una rosa sovraccarica o
   // con esuberi anziani (26+, stesso criterio "esubero 26+" di STEP 6a nel
@@ -8232,15 +9526,29 @@ function getMarketTurnOptions(team, ctx) {
   const needs = getTeamNeeds(team);
   const releasable = getSquadSurplus(team).filter(p => !ctx.lockedPlayers.has(p) && !activeLoans.some(l => l.player === p) && !isPreContracted(p));
   const oversized = team.roster.length >= ROSTER_MAX_TOTAL - 2;
-  const oldSurplus = releasable.filter(p => p.age >= 26);
+  const oldSurplus = releasable.filter(p => p.age >= 26 && !isEliteForTeam(p, team));
   // Fuori sistema tattico (es. ali/trequartisti puri in un 3-1-4-2/5-4-1
   // senza slot ALA/TRQ in nessuno dei 2 moduli): zero valore per QUESTA
   // squadra a prescindere da età o forza — massima priorità di sfoltimento,
   // il ricavato va reinvestito su riserve/ruoli che servono davvero.
-  const offSystem = releasable.filter(p => p.age <= 34 && !playerFitsTeamSystem(p, team));
+  // Un campione fuori dal modulo NON è peso morto: si adatta il modulo a lui,
+  // non lo si liquida. Resta comunque cedibile dal canale 'unsettled' se è lui
+  // a voler partire, ma a prezzo pieno e mai come scarto da sfoltire.
+  const offSystem = releasable.filter(p => p.age <= 34 && !playerFitsTeamSystem(p, team) && !isEliteForTeam(p, team));
+
+  // Uno straniero scontato (§ discussione esplicita con l'utente) è quasi
+  // sempre un affare valido a prescindere dai bisogni strutturali del
+  // momento — calcolato PRIMA del ramo "nessun bisogno" così una squadra di
+  // A con slot liberi lo valuta comunque, needs o no.
+  const foreignTop = computeForeignSignupOption(team);
 
   if (!needs.length && !oversized && !oldSurplus.length && !offSystem.length) {
-    return { needs, disposalTop: null, buyTop: null, faTop: null, loanOutTop: null, noNeedAtAll: true };
+    // Nessun bisogno strutturale — ma un club davvero ricco e ambizioso non
+    // si limita a tappare buchi: se avanza un colpo di qualità genuino, lo
+    // tenta comunque (§ discussione esplicita con l'utente sull'accumulo
+    // inutile di budget). Vedi computeOpportunisticBuy più sotto.
+    const opportunisticBuy = computeOpportunisticBuy(team, ctx);
+    return { needs, disposalTop: null, buyTop: null, faTop: null, loanOutTop: null, foreignTop, opportunisticBuy, noNeedAtAll: !opportunisticBuy && !foreignTop };
   }
 
   // Priorità 0: sfoltire la rosa (fuori sistema tattico, sovradimensionata o
@@ -8257,8 +9565,24 @@ function getMarketTurnOptions(team, ctx) {
   // quindi non rischia più lo svincolo per un semplice cambio di modulo attivo.
   let disposalTop = null;
   if (oversized || oldSurplus.length || offSystem.length) {
-    const rest = releasable.filter(p => p.age <= 34 && !offSystem.includes(p)).sort((a, b) => a.strength - b.strength);
+    // I campioni esclusi da offSystem non devono rientrare da questa porta: chi
+    // è elite per il proprio club non finisce MAI nel pool di sfoltimento, da
+    // nessuno dei due canali.
+    const rest = releasable
+      .filter(p => p.age <= 34 && !offSystem.includes(p) && !isEliteForTeam(p, team))
+      .sort((a, b) => a.strength - b.strength);
     const disposalPool = [...offSystem.sort((a, b) => a.strength - b.strength), ...rest];
+    // Tolleranza alla buonuscita (§ discussione esplicita con l'utente): un
+    // club ricco non aspetta la scadenza naturale del contratto per liberarsi
+    // di un giocatore fuori dai 22 migliori, se il costo è spicciolo per lui —
+    // "se ho 1000M€ e la buonuscita costa 5M€, non mi faccio problemi". La
+    // soglia scala con l'ambizione (0.5%-1.5% del budget), MODULATA dal
+    // churnBias del DS (§ personalità): un Rottamatore (churnBias alto) è
+    // molto più incline a pagare pur di smuovere qualcuno, un Fedelissimo
+    // (churnBias basso) quasi non paga mai una buonuscita — è l'asse su cui
+    // le due personalità si distinguono davvero, non su ambizione/pazienza.
+    const dsProf = getDsProfile(team);
+    const buyoutTolerance = team.budget * 0.01 * (0.5 + dsProf.ambition) * (0.4 + dsProf.churnBias * 1.2);
     for (const candidate of disposalPool) {
       const reasonTag = offSystem.includes(candidate) ? 'fuori sistema tattico' : 'sfoltimento rosa';
       const sale = findBuyerForSurplusPlayer(candidate, team, ctx);
@@ -8266,9 +9590,12 @@ function getMarketTurnOptions(team, ctx) {
       const dest = findLoanDestination(candidate, team);
       if (dest) { disposalTop = { action: 'loan', candidate, reasonTag, dest }; break; }
       const nearExpiry = (candidate.contract?.duration ?? 99) <= 1;
-      if (nearExpiry) { disposalTop = { action: 'release', candidate, reasonTag }; break; }
-      // Nessuna delle tre opzioni per questo candidato: si prova il prossimo
-      // in classifica (più debole → più forte) invece di forzare lo svincolo.
+      const releaseCost = getReleaseCost(candidate);
+      const richEnoughToBuyout = !nearExpiry && releaseCost > 0 && releaseCost <= buyoutTolerance && team.budget >= releaseCost;
+      if (nearExpiry) { disposalTop = { action: 'release', candidate, reasonTag, releaseCost: 0 }; break; }
+      if (richEnoughToBuyout) { disposalTop = { action: 'release', candidate, reasonTag: `${reasonTag}, buonuscita`, releaseCost }; break; }
+      // Nessuna delle opzioni per questo candidato: si prova il prossimo in
+      // classifica (più debole → più forte) invece di forzare lo svincolo.
     }
   }
 
@@ -8287,7 +9614,13 @@ function getMarketTurnOptions(team, ctx) {
       // doppio salto categoria — conta solo il consenso a fasce del
       // giocatore (estimatePlayerJoinChance, sotto), qualunque trasferimento
       // è in teoria possibile.
-      getSquadSurplus(seller).forEach(player => {
+      // Pool acquistabile: non più solo gli esuberi (getSquadSurplus), che con
+      // ROLE_MIN=22 si prosciugavano fino a far sparire il mercato tra club, ma
+      // anche i titolari/riserve SCONTENTI — più forti del contesto in cui
+      // giocano e abbastanza ambiziosi da volerlo lasciare (§getTransferListed-
+      // Players). Il club non li mette in vendita: chiede un prezzo maggiorato
+      // (askMult 1.10-1.45) e cede solo davanti a quella cifra.
+      getTransferListedPlayers(seller).forEach(({ player, askMult }) => {
         if (ctx.lockedPlayers.has(player)) return;
         if (activeLoans.some(l => l.player === player)) return;
         if (isPreContracted(player)) return;
@@ -8304,7 +9637,9 @@ function getMarketTurnOptions(team, ctx) {
         // rischia di restare invenduto e finire svincolato la sessione dopo,
         // sprecando i soldi appena spesi (osservato in partita).
         if ((player.contract?.duration ?? 99) <= 1) return;
-        const cost = Math.max(0.5, Math.round(getTransferValue(player) * (0.9 + Math.random() * 0.3) * 10) / 10);
+        // Prezzo richiesto dal venditore: 90-120% per un esubero (come da
+        // sempre), 110-145% per uno scontento (il club cede malvolentieri).
+        const cost = Math.max(0.5, Math.round(getTransferValue(player) * askMult * 10) / 10);
         // Budget trasferimenti e monte ingaggi sono lo stesso pool ripartibile
         // che il DS umano gestisce col cursore (buildBudgetSliderHtml): se un
         // solo tetto blocca l'affare ma l'altro ha margine, la CPU può
@@ -8317,7 +9652,7 @@ function getMarketTurnOptions(team, ctx) {
         buyCandidates.push({ player, cost, seller });
       });
     });
-    buyTop = pickBestTransferTarget(team, buyCandidates);
+    buyTop = pickBestTransferTarget(team, buyCandidates, null, 'acquisti a pagamento');
 
     // Opzione 2: svincolato — costo cartellino zero, serve solo margine sul
     // monte ingaggi (stessa logica della Fase 5c per il mercato reale).
@@ -8333,15 +9668,21 @@ function getMarketTurnOptions(team, ctx) {
         // squadra troppo poco ambiziosa per la sua forza (stesso principio
         // dell'opzione 1, vedi estimatePlayerJoinChance).
         && Math.random() < estimatePlayerJoinChance(p, team));
-    faTop = pickBestTransferTarget(team, faOptions);
+    faTop = pickBestTransferTarget(team, faOptions, null, 'svincolati');
 
     // Opzione 3: prestare un proprio giovane in esubero (under-23) — stessa
     // logica generalizzata della Fase 2 (findLoanDestination).
-    const loanCandidate = getSquadSurplus(team).find(p =>
-      p.age < 23 && !ctx.lockedPlayers.has(p) && !activeLoans.some(l => l.player === p));
-    if (loanCandidate) {
-      const dest = findLoanDestination(loanCandidate, team);
-      if (dest) loanOutTop = { candidate: loanCandidate, dest };
+    // Non più "il primo under-23 che capita": si prestano prima i giovani con
+    // più potenziale RESIDUO (maxStrength - strength), che sono quelli a cui
+    // giocare serve davvero — un prestito è uno strumento di sviluppo, non solo
+    // un modo di liberare un posto in rosa. Si scorre finché una destinazione
+    // valida esiste, invece di arrendersi al primo candidato senza sbocco.
+    const loanCandidates = getSquadSurplus(team)
+      .filter(p => p.age < 23 && !ctx.lockedPlayers.has(p) && !activeLoans.some(l => l.player === p))
+      .sort((a, b) => ((b.maxStrength || b.strength) - b.strength) - ((a.maxStrength || a.strength) - a.strength));
+    for (const candidate of loanCandidates) {
+      const dest = findLoanDestination(candidate, team);
+      if (dest) { loanOutTop = { candidate, dest }; break; }
     }
   }
 
@@ -8352,9 +9693,10 @@ function getMarketTurnOptions(team, ctx) {
   const offerCandidate = needs.length ? findOfferCandidateForPlayerSurplus(team, ctx) : null;
   const buyTopScore = buyTop ? buyTop.ev.score : -Infinity;
   const faTopScore = faTop ? faTop.ev.score : -Infinity;
-  const offerIsBestTarget = !!offerCandidate && offerCandidate.score > buyTopScore && offerCandidate.score > faTopScore;
+  const foreignTopScore = foreignTop ? foreignTop.ev.score : -Infinity;
+  const offerIsBestTarget = !!offerCandidate && offerCandidate.score > buyTopScore && offerCandidate.score > faTopScore && offerCandidate.score > foreignTopScore;
 
-  return { needs, disposalTop, buyTop, faTop, loanOutTop, offerCandidate, offerIsBestTarget, noNeedAtAll: false };
+  return { needs, disposalTop, buyTop, faTop, loanOutTop, foreignTop, offerCandidate, offerIsBestTarget, noNeedAtAll: false };
 }
 
 function executeDisposalOption(team, opt, ctx) {
@@ -8369,7 +9711,7 @@ function executeDisposalOption(team, opt, ctx) {
     recalculateTeamStrength(team);
     recalculateTeamStrength(buyer);
     recordTransfer(candidate, buyer.name, price);
-    transferLog.push(`${icon('cycle')} <strong>${team.name}</strong> → <strong>${buyer.name}</strong>: ${candidate.firstName} ${candidate.lastName} (${candidate.age} anni, Forza: ${candidate.strength}) per <strong>${price.toFixed(1)}M€</strong> <em>(mercato a turni, ${reasonTag})</em>`);
+    transferLog.push(`${icon('cycle')} <strong>${team.name}</strong> → <strong>${buyer.name}</strong>: ${candidate.firstName} ${candidate.lastName} (${candidate.age} anni, Forza: ${candidate.strength}) per <strong>${price.toFixed(1)}M€</strong> <em>(${reasonTag})</em>`);
     turnMarketLog(team, `VENDE ${candidate.firstName} ${candidate.lastName} (Forza ${candidate.strength}) a ${buyer.name} per ${price.toFixed(1)}M€ (${reasonTag})`);
     turnMarketLog(buyer, `ACQUISTA ${candidate.firstName} ${candidate.lastName} da ${team.name} per ${price.toFixed(1)}M€ (${reasonTag} avversaria)`);
     return { buyer, seller: team };
@@ -8383,25 +9725,31 @@ function executeDisposalOption(team, opt, ctx) {
     recalculateTeamStrength(team);
     recalculateTeamStrength(dest);
     recordTransfer(candidate, dest.name, 'prestito');
-    transferLog.push(`${icon('cycle')} <strong>${team.name}</strong> presta ${candidate.firstName} ${candidate.lastName} a <strong>${dest.name}</strong> <em>(mercato a turni, ${reasonTag})</em>`);
+    transferLog.push(`${icon('cycle')} <strong>${team.name}</strong> presta ${candidate.firstName} ${candidate.lastName} a <strong>${dest.name}</strong> <em>(${reasonTag})</em>`);
     turnMarketLog(team, `PRESTA ${candidate.firstName} ${candidate.lastName} a ${dest.name} (${reasonTag})`);
     turnMarketLog(dest, `RICEVE IN PRESTITO ${candidate.firstName} ${candidate.lastName} da ${team.name}`);
     return { buyer: dest, seller: team };
   }
-  // release (svincolo, solo contratto in scadenza, e solo se già fuori dai
-  // migliori 22 di entrambi i moduli — vedi commento sopra su disposalPool)
+  // release: o perché il contratto è ormai in scadenza (gratis, come sempre),
+  // o perché il club è abbastanza ricco da pagare la buonuscita e liberarsi
+  // comunque di un giocatore fuori dai 22 migliori (opt.releaseCost > 0, § "se
+  // ho 1000M€ e la buonuscita costa 5M€ non mi faccio problemi") — solo se già
+  // fuori dai migliori 22 di entrambi i moduli (vedi commento sopra su disposalPool).
+  const { releaseCost } = opt;
+  if (releaseCost > 0) team.budget -= releaseCost;
   team.roster = team.roster.filter(p => p !== candidate);
   ctx.lockedPlayers.delete(candidate);
   freeAgents.push(candidate);
   recalculateTeamStrength(team);
   recordTransfer(candidate, null, null);
-  transferLog.push(`🔴 <strong>${team.name}</strong> svincola ${candidate.firstName} ${candidate.lastName} (${candidate.age} anni, Forza: ${candidate.strength}, contratto in scadenza) <em>(mercato a turni, ${reasonTag})</em>`);
-  turnMarketLog(team, `SVINCOLA ${candidate.firstName} ${candidate.lastName} (contratto in scadenza, ${reasonTag})`);
+  const releaseNote = releaseCost > 0 ? `, buonuscita ${releaseCost.toFixed(1)}M€` : ', contratto in scadenza';
+  transferLog.push(`🔴 <strong>${team.name}</strong> svincola ${candidate.firstName} ${candidate.lastName} (${candidate.age} anni, Forza: ${candidate.strength}${releaseNote}) <em>(${reasonTag})</em>`);
+  turnMarketLog(team, `SVINCOLA ${candidate.firstName} ${candidate.lastName} (${releaseCost > 0 ? `buonuscita ${releaseCost.toFixed(1)}M€` : 'contratto in scadenza'}, ${reasonTag})`);
   return { buyer: null, seller: team };
 }
 
 function executeBuyOption(team, opt, ctx) {
-  const { player, cost, seller } = opt;
+  const { player, cost, seller, reasonTag } = opt;
   commitRebalanceForDeal(team, cost, player.contract?.salary ?? getDisplaySalary(player.strength));
   seller.roster = seller.roster.filter(p => p !== player);
   team.roster.push(player);
@@ -8411,8 +9759,9 @@ function executeBuyOption(team, opt, ctx) {
   recalculateTeamStrength(team);
   recalculateTeamStrength(seller);
   recordTransfer(player, team.name, cost);
-  transferLog.push(`${icon('cycle')} <strong>${seller.name}</strong> → <strong>${team.name}</strong>: ${player.firstName} ${player.lastName} (${player.age} anni, Forza: ${player.strength}) per <strong>${cost.toFixed(1)}M€</strong> <em>(mercato a turni)</em>`);
-  turnMarketLog(team, `ACQUISTA ${player.firstName} ${player.lastName} (Forza ${player.strength}) da ${seller.name} per ${cost.toFixed(1)}M€`);
+  const tagNote = reasonTag ? ` <em>(${reasonTag})</em>` : '';
+  transferLog.push(`${icon('cycle')} <strong>${seller.name}</strong> → <strong>${team.name}</strong>: ${player.firstName} ${player.lastName} (${player.age} anni, Forza: ${player.strength}) per <strong>${cost.toFixed(1)}M€</strong>${tagNote}`);
+  turnMarketLog(team, `ACQUISTA ${player.firstName} ${player.lastName} (Forza ${player.strength}) da ${seller.name} per ${cost.toFixed(1)}M€${tagNote ? ` (${reasonTag})` : ''}`);
   turnMarketLog(seller, `VENDE ${player.firstName} ${player.lastName} (Forza ${player.strength}) a ${team.name} per ${cost.toFixed(1)}M€`);
   return { buyer: team, seller };
 }
@@ -8426,7 +9775,7 @@ function executeFaOption(team, opt, ctx) {
   ctx.lockedPlayers.add(fa);
   recalculateTeamStrength(team);
   recordTransfer(fa, team.name, 0);
-  transferLog.push(`✍️ <strong>${team.name}</strong> ingaggia lo svincolato ${fa.firstName} ${fa.lastName} (${fa.age} anni, Forza: ${fa.strength}) <em>(mercato a turni)</em>`);
+  transferLog.push(`✍️ <strong>${team.name}</strong> ingaggia lo svincolato ${fa.firstName} ${fa.lastName} (${fa.age} anni, Forza: ${fa.strength})`);
   turnMarketLog(team, `INGAGGIA SVINCOLATO ${fa.firstName} ${fa.lastName} (Forza ${fa.strength})`);
   return { buyer: team, seller: null };
 }
@@ -8440,7 +9789,7 @@ function executeLoanOutOption(team, opt, ctx) {
   recalculateTeamStrength(team);
   recalculateTeamStrength(dest);
   recordTransfer(candidate, dest.name, 'prestito');
-  transferLog.push(`${icon('cycle')} <strong>${team.name}</strong> presta ${candidate.firstName} ${candidate.lastName} a <strong>${dest.name}</strong> <em>(mercato a turni)</em>`);
+  transferLog.push(`${icon('cycle')} <strong>${team.name}</strong> presta ${candidate.firstName} ${candidate.lastName} a <strong>${dest.name}</strong>`);
   turnMarketLog(team, `PRESTA ${candidate.firstName} ${candidate.lastName} a ${dest.name}`);
   turnMarketLog(dest, `RICEVE IN PRESTITO ${candidate.firstName} ${candidate.lastName} da ${team.name}`);
   return { buyer: dest, seller: team };
@@ -8457,28 +9806,83 @@ function executeLoanOutOption(team, opt, ctx) {
 // TUO giocatore ha priorità sulle altre mosse SOLO se è davvero il miglior
 // target, non un semplice ripiego) — NON marca ctx.offeredPairs qui: lo fa
 // il chiamante, solo quando l'offerta viene davvero generata.
+// Due canali di candidatura, con prezzo diverso perché il rapporto di forza
+// negoziale è diverso:
+//  - SORPRESA (getSquadSurplus, invariato): la CPU si avvicina a un tuo
+//    esubero di sua iniziativa, contro la tua volontà implicita — paga un
+//    premio "di corteggiamento" (110-140%, invariato da sempre).
+//  - LISTATO (playerTransferListed, nuovo): TU hai dichiarato il giocatore
+//    disponibile (tab Rosa → "Metti in lista trasferimento") — non c'è
+//    nessuna resistenza da vincere, quindi si paga il prezzo normale di un
+//    trasferimento voluto (90-120%, la stessa fascia dell'Opzione 1 CPU-vs-
+//    CPU), MAI il premio da poaching. Un giocatore listato è inoltre
+//    valutabile ANCHE come rincalzo puro (bypassa il filtro "buon senso
+//    panchina" di wouldEnterBest11): l'hai già deciso tu di cederlo, non
+//    serve proteggerlo da un'offerta "solo di scorta".
 function findOfferCandidateForPlayerSurplus(team, ctx) {
   if (!playerTeam || team === playerTeam) return null;
-  const candidates = getSquadSurplus(playerTeam).filter(player => {
-    const key = `${team.name}::${player.id}`;
+  const surplusSet = new Set(getSquadSurplus(playerTeam));
+  const candidates = playerTeam.roster
+    .filter(player => surplusSet.has(player) || playerTransferListed.has(player.id))
+    .filter(player => {
+      const key = `${team.name}::${player.id}`;
+      if (ctx.offeredPairs.has(key)) return false;
+      if (ctx.lockedPlayers.has(player)) return false;
+      if (activeLoans.some(l => l.player === player)) return false;
+      if (isPreContracted(player)) return false;
+      if (!canAddRole(team, player.role) || !canTeamAcquirePlayer(team, player)) return false;
+      if (!playerTransferListed.has(player.id) && !wouldEnterBest11(team, player) && (player.age >= 24 || player.nationality !== 'IT')) return false;
+      return true;
+    });
+  if (!candidates.length) return null;
+  const priced = candidates
+    .map(player => {
+      const listed = playerTransferListed.has(player.id);
+      const mult = listed ? (0.9 + Math.random() * 0.3) : (1.1 + Math.random() * 0.3);
+      return { player, listed, cost: Math.max(0.5, Math.round(getTransferValue(player) * mult * 10) / 10) };
+    })
+    .filter(({ cost }) => team.budget >= cost)
+    .map(c => ({ ...c, ev: evaluateTransferTarget(team, c.player, c.cost) }))
+    // Disciplina economica: come per pickBestTransferTarget, un'offerta si fa
+    // solo se il conto torna DAVVERO (score netto positivo), non solo se il
+    // guadagno grezzo è positivo — altrimenti una CPU povera farebbe offerte
+    // che non può giustificare economicamente.
+    .filter(x => x.ev && x.ev.gain > 0 && x.ev.score > 0)
+    .sort((a, b) => b.ev.score - a.ev.score);
+  if (!priced.length) return null;
+  const { player, cost, ev, listed } = priced[0];
+  return { player, cost, score: ev.score, listed };
+}
+
+// Simmetrico per i PRESTITI: una CPU che al suo turno vorrebbe prendere in
+// prestito uno dei tuoi giocatori messi in lista prestito. A differenza del
+// trasferimento non esiste un canale "sorpresa" — oggi nessun meccanismo CPU
+// chiede mai un prestito non richiesto di un tuo giocatore, quindi qui SOLO
+// i listati sono candidabili. Stesso criterio "deve giocare" già usato per i
+// prestiti CPU-vs-CPU (getLoanFitTier, vedi il fix sui prestiti assurdi):
+// niente richieste per un giocatore che da loro farebbe comunque panchina.
+function findLoanRequestForPlayerListed(team, ctx) {
+  if (!playerTeam || team === playerTeam || !playerLoanListed.size) return null;
+  const candidates = playerTeam.roster.filter(player => {
+    if (!playerLoanListed.has(player.id)) return false;
+    const key = `${team.name}::loan::${player.id}`;
     if (ctx.offeredPairs.has(key)) return false;
     if (ctx.lockedPlayers.has(player)) return false;
     if (activeLoans.some(l => l.player === player)) return false;
     if (isPreContracted(player)) return false;
-    if (!canAddRole(team, player.role) || !canTeamAcquirePlayer(team, player)) return false;
-    if (!wouldEnterBest11(team, player) && (player.age >= 24 || player.nationality !== 'IT')) return false;
+    if (!canAddRole(team, player.role)) return false;
+    if (team.roster.length >= ROSTER_MAX_TOTAL || getIncomingLoanCount(team) >= MAX_INCOMING_LOANS) return false;
+    if (!getLoanFitTier(player, team)) return false;
     return true;
   });
   if (!candidates.length) return null;
   const priced = candidates
-    .map(player => ({ player, cost: Math.max(0.5, Math.round(getTransferValue(player) * (1.1 + Math.random() * 0.3) * 10) / 10) }))
-    .filter(({ cost }) => team.budget >= cost)
-    .map(({ player, cost }) => ({ player, cost, ev: evaluateTransferTarget(team, player, cost) }))
-    .filter(x => x.ev && x.ev.gain > 0)
+    .map(player => ({ player, ev: evaluateTransferTarget(team, player, 0) }))
+    .filter(x => x.ev && x.ev.gain > 0 && x.ev.score > 0)
     .sort((a, b) => b.ev.score - a.ev.score);
   if (!priced.length) return null;
-  const { player, cost, ev } = priced[0];
-  return { player, cost, score: ev.score };
+  const { player, ev } = priced[0];
+  return { player, score: ev.score };
 }
 
 // Un turno di una squadra CPU: stessa priorità di sempre (sfoltimento →
@@ -8489,12 +9893,52 @@ function findOfferCandidateForPlayerSurplus(team, ctx) {
 function takeTurnMarketAction(team, ctx) {
   if (team === playerTeam && !TURN_MARKET_AUTO_PLAY_HUMAN) return null; // gestito dalla UI di mercato in modalità turno
 
+  // Fotografia del ragionamento PRIMA di qualunque decisione: come il DS legge
+  // la rosa e la cassa in questo preciso turno.
+  if (dsLogEnabledFor(team)) {
+    dsLog(team, 'analisi', explainSquad(team));
+    dsLog(team, 'bilancio', explainBudget(team));
+  }
+
   const options = getMarketTurnOptions(team, ctx);
+  if (dsLogEnabledFor(team)) dsLog(team, 'analisi', `buchi: ${explainNeeds(options.needs)}`);
+
   if (options.noNeedAtAll) {
     turnMarketLog(team, 'nessun bisogno reale (né comprare né vendere) → PASSA');
     return null;
   }
-  if (options.disposalTop) return executeDisposalOption(team, options.disposalTop, ctx);
+  // Nessun bisogno strutturale, ma un'opportunità genuina non richiede un
+  // buco da tappare: un colpo opportunistico (club ricco/ambizioso) o uno
+  // straniero scontato (§ discussione esplicita con l'utente, quasi sempre un
+  // affare valido di per sé) possono entrambi giustificarsi da soli — vince
+  // quello con lo score migliore, invece di lasciare il budget fermo.
+  if (options.opportunisticBuy || options.foreignTop) {
+    const oppScore = options.opportunisticBuy ? options.opportunisticBuy.ev.score : -Infinity;
+    const forScore = options.foreignTop ? options.foreignTop.ev.score : -Infinity;
+    if (forScore > oppScore) {
+      if (dsLogEnabledFor(team)) dsLog(team, 'scelta', `nessun bisogno, ma straniero scontato: ${options.foreignTop.cand.lastName} per ${options.foreignTop.cost.toFixed(1)}M€`);
+      return executeForeignSignupOption(team, options.foreignTop);
+    }
+    if (dsLogEnabledFor(team)) dsLog(team, 'scelta', `nessun bisogno, ma colpo opportunistico: ${options.opportunisticBuy.player.lastName} per ${options.opportunisticBuy.cost.toFixed(1)}M€`);
+    return executeBuyOption(team, options.opportunisticBuy, ctx);
+  }
+  // Lo sfoltimento aveva priorità ASSOLUTA e incondizionata sull'acquisto: una
+  // squadra con un ruolo scoperto e per giunta senza riserve (severity 25)
+  // bruciava comunque il turno per piazzare un esubero qualsiasi. Ora un buco
+  // grave viene prima, MA solo se lo sfoltimento in questione è di routine: un
+  // giocatore fuori sistema tattico (peso morto puro) e una rosa ormai al tetto
+  // restano più urgenti di qualunque acquisto — nel secondo caso l'acquisto non
+  // sarebbe nemmeno possibile senza prima liberare un posto.
+  const urgentNeed = options.needs.some(n => n.severity >= 25);
+  const routineDisposal = options.disposalTop
+    && options.disposalTop.reasonTag !== 'fuori sistema tattico'
+    && team.roster.length < ROSTER_MAX_TOTAL - 2;
+  const deferDisposal = urgentNeed && routineDisposal;
+
+  if (deferDisposal) {
+    dsLog(team, 'analisi', `sfoltimento di ${options.disposalTop.candidate.lastName} rinviato: c'è un buco più urgente da colmare prima`);
+  }
+  if (options.disposalTop && !deferDisposal) return executeDisposalOption(team, options.disposalTop, ctx);
 
   if (!options.needs.length) {
     turnMarketLog(team, 'nessun bisogno di acquisto (e nulla da smuovere in rosa) → PASSA');
@@ -8511,11 +9955,25 @@ function takeTurnMarketAction(team, ctx) {
   // che mette in pausa e mostra la richiesta subito.
   if (options.offerIsBestTarget) {
     ctx.offeredPairs.add(`${team.name}::${options.offerCandidate.player.id}`);
-    return { pendingPlayerOffer: { team, player: options.offerCandidate.player, cost: options.offerCandidate.cost } };
+    return { pendingPlayerOffer: { team, player: options.offerCandidate.player, cost: options.offerCandidate.cost, listed: options.offerCandidate.listed } };
   }
 
-  if (options.buyTop) return executeBuyOption(team, options.buyTop, ctx);
-  if (options.faTop) return executeFaOption(team, options.faTop, ctx);
+  // Tra acquisto a pagamento, svincolato e straniero scontato vince chi ha lo
+  // score migliore (stessa logica di offerIsBestTarget sopra): uno straniero
+  // forte e scontato non deve essere sistematicamente scavalcato solo perché
+  // buyTop/faTop venivano controllati per primi nell'ordine storico.
+  const domesticChoices = [
+    options.buyTop && { kind: 'buy', opt: options.buyTop, score: options.buyTop.ev.score },
+    options.faTop && { kind: 'fa', opt: options.faTop, score: options.faTop.ev.score },
+    options.foreignTop && { kind: 'foreign', opt: options.foreignTop, score: options.foreignTop.ev.score },
+  ].filter(Boolean);
+  if (domesticChoices.length) {
+    domesticChoices.sort((a, b) => b.score - a.score);
+    const winner = domesticChoices[0];
+    if (winner.kind === 'buy') return executeBuyOption(team, winner.opt, ctx);
+    if (winner.kind === 'fa') return executeFaOption(team, winner.opt, ctx);
+    return executeForeignSignupOption(team, winner.opt);
+  }
   if (options.loanOutTop) return executeLoanOutOption(team, options.loanOutTop, ctx);
 
   // Opzione 4 (§1a-bis, solo turni invernali): firmare un precontratto per
@@ -8534,8 +9992,16 @@ function takeTurnMarketAction(team, ctx) {
         canAddRole(team, p.role) && canTeamAcquirePlayer(team, p) &&
         preContractWageBillAllows(team, p.contract?.salary ?? getDisplaySalary(p.strength)) &&
         Math.random() < estimatePlayerJoinChance(p, team));
-    if (preContractCandidates.length) {
-      const { player, fromTeam } = preContractCandidates.sort((a, b) => b.player.strength - a.player.strength)[0];
+    // Scelta per PUNTEGGIO (evaluateTransferTarget a cartellino zero), non più
+    // per forza grezza: prima la CPU firmava il più forte della shortlist anche
+    // per un ruolo in cui aveva già ottima profondità, e ignorava del tutto età,
+    // stipendio e prospettiva futura di un'operazione pluriennale.
+    const scoredPreContracts = preContractCandidates
+      .map(pc => ({ ...pc, ev: evaluateTransferTarget(team, pc.player, 0) }))
+      .filter(pc => pc.ev && pc.ev.gain > 0 && pc.ev.score > 0)
+      .sort((a, b) => b.ev.score - a.ev.score);
+    if (scoredPreContracts.length) {
+      const { player, fromTeam } = scoredPreContracts[0];
       signPreContract(player, fromTeam, team);
       turnMarketLog(team, `PRE-CONTRATTO con ${player.firstName} ${player.lastName} (da ${fromTeam.name}, Forza ${player.strength})`);
       return { buyer: team, seller: null };
@@ -8546,22 +10012,42 @@ function takeTurnMarketAction(team, ctx) {
   // colmerebbe comunque il bisogno.
   if (options.offerCandidate) {
     ctx.offeredPairs.add(`${team.name}::${options.offerCandidate.player.id}`);
-    return { pendingPlayerOffer: { team, player: options.offerCandidate.player, cost: options.offerCandidate.cost } };
+    return { pendingPlayerOffer: { team, player: options.offerCandidate.player, cost: options.offerCandidate.cost, listed: options.offerCandidate.listed } };
   }
+
+  // Ultimissima risorsa: un TUO giocatore messo in lista PRESTITO (mai un
+  // acquisto/trasferimento vero, quindi meno prioritario di tutto quanto
+  // sopra) colmerebbe comunque il bisogno — stessa logica "va chiesta, mai
+  // presa in automatico" delle offerte di trasferimento, vedi
+  // findLoanRequestForPlayerListed.
+  const loanRequest = findLoanRequestForPlayerListed(team, ctx);
+  if (loanRequest) {
+    ctx.offeredPairs.add(`${team.name}::loan::${loanRequest.player.id}`);
+    return { pendingPlayerLoanOffer: { team, player: loanRequest.player } };
+  }
+
+  // Lo sfoltimento rinviato più sopra in favore di un bisogno urgente torna
+  // qui come ripiego: se poi nessun acquisto è andato in porto, tanto vale non
+  // sprecare il turno e piazzare comunque l'esubero (fa cassa per il giro dopo).
+  if (deferDisposal) return executeDisposalOption(team, options.disposalTop, ctx);
 
   turnMarketLog(team, 'nessuna azione disponibile → PASSA');
   return null;
 }
 
-// Punto d'ingresso dello scheduler. maxRounds è solo una guardia di sicurezza
-// (il mercato normalmente termina da solo quando un giro intero non produce
-// nessuna azione). onComplete viene invocato a schedulazione conclusa — è
-// sempre asincrono in senso lato (può risolversi nello stesso tick se il
-// player non partecipa/non ha mai un turno reale, o dopo N aperture della
-// UI di mercato in modalità turno se partecipa) — i chiamanti reali
-// (updateTeamStrengths) devono trattarlo come tale, non assumere che il
-// mercato sia già concluso subito dopo la chiamata a runTurnBasedMarket.
-function runTurnBasedMarket(onComplete = () => {}, maxRounds = 40) {
+// Punto d'ingresso dello scheduler. maxRounds è anche la durata calendariale
+// del mercato in giorni (§ discussione esplicita con l'utente: 60 giorni
+// l'estivo, 30 l'invernale — vedi formatMarketDay/updateMarketDayCounter, che
+// mostrano "giorni rimasti" = maxRounds - round) oltre che una guardia di
+// sicurezza (il mercato normalmente termina anche prima da solo quando un
+// giro intero non produce nessuna azione). onComplete viene invocato a
+// schedulazione conclusa — è sempre asincrono in senso lato (può risolversi
+// nello stesso tick se il player non partecipa/non ha mai un turno reale, o
+// dopo N aperture della UI di mercato in modalità turno se partecipa) — i
+// chiamanti reali (updateTeamStrengths) devono trattarlo come tale, non
+// assumere che il mercato sia già concluso subito dopo la chiamata a
+// runTurnBasedMarket.
+function runTurnBasedMarket(onComplete = () => {}, maxRounds = 60) {
   const allTeams = [...serieA, ...serieB, ...serieC];
   const order = [...allTeams].sort((a, b) => (b.ds?.strength ?? 0) - (a.ds?.strength ?? 0));
   // lockedPlayers punta al set GLOBALE di sessione (sessionMovedPlayers, §5):
@@ -8597,6 +10083,7 @@ function runTurnBasedMarket(onComplete = () => {}, maxRounds = 40) {
 
   const startRound = () => {
     round++;
+    __dsLogRound = round; // etichetta di giro per il log del pensiero del DS
     anyActionThisRound = false;
     actedThisRound = new Set();
     idx = 0;
@@ -8676,8 +10163,8 @@ function runTurnBasedMarket(onComplete = () => {}, maxRounds = 40) {
       // Finché resta da decidere, la finestra blocca acquisti/vendite/
       // prestiti/svincoli (vedi hasUnresolvedOffers in showManagerMarketModal)
       // — il player può comunque muoversi liberamente tra le tab.
-      const { team: offerTeam, player, cost } = result.pendingPlayerOffer;
-      pendingAIOffers.push({ player, buyerTeam: offerTeam, offerPrice: cost });
+      const { team: offerTeam, player, cost, listed } = result.pendingPlayerOffer;
+      pendingAIOffers.push({ player, buyerTeam: offerTeam, offerPrice: cost, listed: !!listed });
       turnMarketLog(offerTeam, `OFFRE ${cost.toFixed(1)}M€ per ${player.firstName} ${player.lastName} (Forza ${player.strength}) di ${playerTeam.name} — in attesa di risposta`);
       hideMarketProgressBar();
       showManagerMarketModal(
@@ -8699,6 +10186,41 @@ function runTurnBasedMarket(onComplete = () => {}, maxRounds = 40) {
             if (accepted) {
               ctx.lockedPlayers.add(resolvedPlayer);
               registerResult(buyerTeam, { buyer: buyerTeam, seller: playerTeam });
+            }
+          },
+        }
+      );
+      return;
+    }
+    // Simmetrico al ramo pendingPlayerOffer sopra, ma per una RICHIESTA DI
+    // PRESTITO su un tuo giocatore messo in lista prestito (§ "metti in lista
+    // prestito"): stessa tab "Offerte ricevute", stessa regola di turno
+    // (l'esito si decide subito, ma non consuma il tuo turno — solo quello
+    // della squadra richiedente, e solo se accetti).
+    if (result && result.pendingPlayerLoanOffer) {
+      const { team: loanTeam, player } = result.pendingPlayerLoanOffer;
+      pendingAILoanOffers.push({ player, loanTeam });
+      turnMarketLog(loanTeam, `RICHIEDE IN PRESTITO ${player.firstName} ${player.lastName} (Forza ${player.strength}) da ${playerTeam.name} — in attesa di risposta`);
+      hideMarketProgressBar();
+      showManagerMarketModal(
+        () => {
+          ctx.playerOptedOut = true;
+          showMarketProgressBar(); updateMarketDayCounter(round, maxRounds, currentMarketIsWinter);
+          processNext();
+        },
+        {
+          onContinue: () => {
+            showMarketProgressBar(); updateMarketDayCounter(round, maxRounds, currentMarketIsWinter);
+            processNext();
+          },
+          onTurnConsumed: () => {
+            showMarketProgressBar(); updateMarketDayCounter(round, maxRounds, currentMarketIsWinter);
+            processNext();
+          },
+          onLoanOfferResolved: (requestingTeam, resolvedPlayer, accepted) => {
+            if (accepted) {
+              ctx.lockedPlayers.add(resolvedPlayer);
+              registerResult(requestingTeam, { buyer: requestingTeam, seller: playerTeam });
             }
           },
         }
@@ -9059,15 +10581,42 @@ function findLoanDestination(player, homeTeam) {
   // §5 REGOLE_CALCIOMERCATO: nessun tetto rigido di forza per lega — il
   // consenso a fasce (estimatePlayerJoinChance) filtra le destinazioni non
   // credibili in modo probabilistico invece che con un divieto assoluto.
-  const candidates = [...serieA, ...serieB, ...serieC].filter(t =>
-    t !== playerTeam && t !== homeTeam && canAddRole(t, player.role)
-    && t.roster.length < ROSTER_MAX_TOTAL && getIncomingLoanCount(t) < MAX_INCOMING_LOANS
-    && Math.random() < estimatePlayerJoinChance(player, t)
-  );
+  // Il tetto stranieri invece resta un vincolo assoluto anche per i prestiti
+  // (§ bug segnalato dall'utente: mancava qui, a differenza delle funzioni
+  // gemelle generateSellOffers/generateLoanOutOffers/generateIncomingLoan-
+  // Candidates che lo controllano già — un prestito CPU-vs-CPU o "auto" del
+  // giocatore poteva così accumulare più di 3 stranieri in rosa, anche in B/C.
+  const isForeign = player.nationality !== 'IT';
+  const candidates = [];
+  [...serieA, ...serieB, ...serieC].forEach(t => {
+    if (t === playerTeam || t === homeTeam) return;
+    if (!canAddRole(t, player.role)) return;
+    if (isForeign && !canBuyForeignPlayer(t)) return;
+    if (t.roster.length >= ROSTER_MAX_TOTAL || getIncomingLoanCount(t) >= MAX_INCOMING_LOANS) return;
+    if (Math.random() >= estimatePlayerJoinChance(player, t)) return;
+    // Il giocatore deve avere un ruolo vero nella squadra che lo accoglie,
+    // altrimenti il prestito non serve né a lui né a loro (vedi getLoanFitTier).
+    const fit = getLoanFitTier(player, t);
+    if (!fit) return;
+    candidates.push({ team: t, fit, level: getSquadLevel(t), needsRole: neededRoles(t).includes(player.role) });
+  });
   if (!candidates.length) return null;
-  const needing = candidates.filter(t => neededRoles(t).includes(player.role));
-  const pool = needing.length ? needing : candidates;
-  return pool[Math.floor(Math.random() * pool.length)];
+
+  // Ordine di preferenza, dal più al meno importante:
+  //  1) dove giocherebbe TITOLARE invece che da rotazione (fit 2 > 1);
+  //  2) dove quel ruolo serve davvero (più minuti garantiti);
+  //  3) il club di LIVELLO PIÙ ALTO tra quelli rimasti — un prospetto va
+  //     mandato il più in alto possibile compatibilmente col fatto che giochi,
+  //     non parcheggiato nella prima squadra disponibile come prima.
+  candidates.sort((a, b) =>
+    (b.fit - a.fit) || (Number(b.needsRole) - Number(a.needsRole)) || (b.level - a.level));
+
+  // Un pizzico di casualità tra le destinazioni sostanzialmente equivalenti,
+  // così due prestiti identici non finiscono sempre allo stesso club.
+  const best = candidates[0];
+  const equals = candidates.filter(c =>
+    c.fit === best.fit && c.needsRole === best.needsRole && Math.abs(c.level - best.level) <= 2);
+  return equals[Math.floor(Math.random() * equals.length)].team;
 }
 
 // Giocatori altrui in "esubero" (fuori dai migliori 22 per modulo del loro
@@ -9144,12 +10693,15 @@ function generateSellOffers(player) {
   const offers = [];
   for (const { team: t } of interested) {
     if (offers.length >= numOffers) break;
-    // Prezzo scontato (0.60-0.90×): vendere è comunque un'iniziativa di chi
-    // ha bisogno/voglia di liberarsi del giocatore, non è in posizione di
-    // forza — stessa identica formula di findBuyerForSurplusPlayer (lo
-    // sfoltimento CPU), apposta, per non avvantaggiare l'uno sull'altro.
-    const variation = 0.60 + Math.random() * 0.30;
-    const price = Math.round(baseValue * variation * 10) / 10;
+    // "Svendita subito": stesso principio di getForcedSaleMult usato per lo
+    // sfoltimento CPU — un campione (elite per la tua rosa, o assoluto ≥80)
+    // non si svende come un rincalzo, prima invece succedeva sempre (sconto
+    // piatto 0.60-0.90× indipendente da chi era il giocatore). In più, uno
+    // sconto d'URGENZA aggiuntivo (85-95% del già scontato): a differenza
+    // della vendita "in lista" (che aspetta la migliore offerta di mercato
+    // ai turni successivi), qui stai chiedendo cassa SUBITO, e chi compra lo sa.
+    const mult = getForcedSaleMult(player, playerTeam) * (0.85 + Math.random() * 0.10);
+    const price = Math.round(baseValue * mult * 10) / 10;
     if (t.budget < price) continue;
     offers.push({ buyerTeam: t, price });
   }
@@ -9176,10 +10728,17 @@ function generateLoanOutOffers(player) {
     t !== playerTeam && canAddRole(t, player.role)
     && (!isForeign || canBuyForeignPlayer(t))
     && Math.random() < estimatePlayerJoinChance(player, t)
-  ).filter(t => {
-    const ev = evaluateTransferTarget(t, player, 0);
-    return ev && ev.gain > 0;
-  });
+  // `ev.gain > 0` da solo era un filtro troppo debole: per un giocatore che non
+  // entra in undici evaluateTransferTarget ripiega sul guadagno delle sole
+  // riserve (×0.35), che è quasi sempre positivo — bastava essere marginalmente
+  // meglio del peggior rincalzo. Serve lo stesso criterio "deve giocare" usato
+  // dai prestiti CPU-vs-CPU, altrimenti le offerte che ricevi TU restano
+  // irrealistiche mentre quelle tra CPU no.
+  ).filter(t => getLoanFitTier(player, t) > 0)
+   .filter(t => {
+     const ev = evaluateTransferTarget(t, player, 0);
+     return ev && ev.gain > 0;
+   });
   shuffleArray(candidates);
   const numOffers = Math.floor(Math.random() * 6); // 0-5
   return candidates.slice(0, numOffers).map(t => ({ team: t }));
@@ -9195,7 +10754,7 @@ function executeSellTo(player, buyerTeam, price) {
   recalculateTeamStrength(buyerTeam);
   recalculateTeamStrength(playerTeam);
   recordTransfer(player, buyerTeam.name, price);
-  transferLog.push(`${icon('money')} <strong>${playerTeam.name}</strong> vende ${player.firstName} ${player.lastName} a <strong>${buyerTeam.name}</strong> per <strong>${price.toFixed(1)}M€</strong>`);
+  transferLog.push(`${icon('cycle')} <strong>${playerTeam.name}</strong> → <strong>${buyerTeam.name}</strong>: ${player.firstName} ${player.lastName} (${player.age} anni, Forza: ${player.strength}) per <strong>${price.toFixed(1)}M€</strong>`);
 }
 
 // Esegue la vendita di un giocatore straniero a un club della sua nazione
@@ -9207,7 +10766,7 @@ function executeSellAbroad(player, foreignClubName, price) {
   lockForSession(player);
   recalculateTeamStrength(playerTeam);
   recordTransfer(player, foreignClubName, price);
-  transferLog.push(`✈️ <strong>${playerTeam.name}</strong> vende ${player.firstName} ${player.lastName} a <strong>${foreignClubName}</strong> (estero) per <strong>${price.toFixed(1)}M€</strong>`);
+  transferLog.push(`✈️ <strong>${playerTeam.name}</strong> vende ${player.firstName} ${player.lastName} (${player.age} anni, Forza: ${player.strength}) a <strong>${foreignClubName}</strong> (estero) per <strong>${price.toFixed(1)}M€</strong>`);
 }
 
 // §1a-bis REGOLE_CALCIOMERCATO: un giocatore con un precontratto firmato in
@@ -9217,6 +10776,24 @@ function executeSellAbroad(player, foreignClubName, price) {
 // per le CPU. Applica lo stipendio/durata già concordati alla firma.
 function resolvePreContractDeparture(player, preContract) {
   const { fromTeam, toTeam, signedSalary, signedDuration } = preContract;
+  // Tetto stranieri: a differenza di budget/monte ingaggi (intenzionalmente
+  // MAI ri-condizionati qui, vedi commento sopra — "l'accordo è garantito"),
+  // il tetto stranieri resta un vincolo di lega assoluto e va ricontrollato
+  // ORA (§ bug segnalato dall'utente: precontratti facevano atterrare
+  // stranieri anche in una squadra retrocessa in B/C tra la firma invernale
+  // e questa risoluzione, o già al tetto per altri precontratti firmati nello
+  // stesso turno). Il giocatore, il cui contratto con fromTeam sta comunque
+  // per scadere, va semplicemente sul mercato svincolati invece che forzare
+  // un trasferimento che violerebbe la regola.
+  if (player.nationality !== 'IT' && !canBuyForeignPlayer(toTeam)) {
+    fromTeam.roster = fromTeam.roster.filter(p => p !== player);
+    freeAgents.push(player);
+    recordTransfer(player, null, null);
+    recalculateTeamStrength(fromTeam);
+    transferLog.push(`🔚 <em>${player.firstName} ${player.lastName}</em> lascia <strong>${fromTeam.name}</strong> a parametro zero — il pre-contratto con <strong>${toTeam.name}</strong> sfuma (tetto stranieri)`);
+    pendingPreContracts = pendingPreContracts.filter(pc => pc !== preContract);
+    return;
+  }
   fromTeam.roster = fromTeam.roster.filter(p => p !== player);
   toTeam.roster.push(player);
   player.contract.salary = signedSalary;
@@ -9224,7 +10801,7 @@ function resolvePreContractDeparture(player, preContract) {
   recalculateTeamStrength(fromTeam);
   recalculateTeamStrength(toTeam);
   recordTransfer(player, toTeam.name, 0);
-  transferLog.push(`${icon('clipboard')} <em>${player.firstName} ${player.lastName}</em> lascia <strong>${fromTeam.name}</strong> a parametro zero e si trasferisce a <strong>${toTeam.name}</strong> (pre-contratto firmato in inverno)`);
+  transferLog.push(`🔚 <em>${player.firstName} ${player.lastName}</em> lascia <strong>${fromTeam.name}</strong> a parametro zero e si trasferisce a <strong>${toTeam.name}</strong> (pre-contratto firmato in inverno)`);
   pendingPreContracts = pendingPreContracts.filter(pc => pc !== preContract);
 }
 
@@ -9296,7 +10873,7 @@ function executeEarlyRelease(player) {
 function executeAnytimeRenew(player) {
   const newSalary = getRenewalSalary(player);
   if (!wageCapAllows(playerTeam, newSalary, player.contract?.salary || 0)) return { success: false, refused: false };
-  const outcome = computeRenewalOutcome(player, playerTeam);
+  const outcome = consumeRenewalOutcome(player, playerTeam);
   if (outcome === 0) {
     const reason = getRenewalRefusalReason(player);
     transferLog.push(`${icon('clipboard')} <em>${player.firstName} ${player.lastName}</em> rifiuta il rinnovo con <strong>${playerTeam.name}</strong> (${reason})`);
@@ -9452,11 +11029,13 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
   // deve tornare a essere richiesta al turno successivo.
   const renewalDecisions = mmSessionRenewalDecisions; // player.id → 'renewed' | 'released'
   const offerDecisions = mmSessionOfferDecisions; // player.id → 'accepted' | 'refused'
-  // Finché c'è un'offerta ricevuta ancora da decidere, le altre azioni di
-  // mercato (compra/vendi/presta/svincola) restano bloccate — il player deve
-  // prima rispondere a chi gli ha fatto un'offerta, ma può comunque muoversi
-  // liberamente tra le tab per consultare la rosa nel frattempo.
-  const hasUnresolvedOffers = () => pendingAIOffers.some(o => !offerDecisions.has(o.player.id));
+  const loanOfferDecisions = mmSessionLoanOfferDecisions; // player.id → 'accepted' | 'refused' (richieste di prestito)
+  // Finché c'è un'offerta ricevuta ancora da decidere (trasferimento O
+  // prestito), le altre azioni di mercato (compra/vendi/presta/svincola)
+  // restano bloccate — il player deve prima rispondere, ma può comunque
+  // muoversi liberamente tra le tab per consultare la rosa nel frattempo.
+  const hasUnresolvedOffers = () => pendingAIOffers.some(o => !offerDecisions.has(o.player.id))
+    || pendingAILoanOffers.some(o => !loanOfferDecisions.has(o.player.id));
   const boughtIds = mmSessionBoughtIds; // player.id già acquistati
   // Un giocatore venduto/ceduto in questa sessione (Offerte ricevute, Rosa →
   // Vendi) non deve poter essere ricomprato nella STESSA sessione — senza
@@ -9468,10 +11047,21 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
   // per lui va invalidata subito: altrimenti resterebbe accettabile per un
   // giocatore che nel frattempo è già altrove, con conseguente sdoppiamento
   // (il giocatore finirebbe nella rosa di DUE squadre contemporaneamente).
+  // Copre entrambi i tipi di offerta (trasferimento e prestito): un
+  // giocatore può avere al più una richiesta pendente di ciascun tipo.
   const invalidatePendingOfferFor = (playerId) => {
+    if (pendingAILoanOffers.some(o => o.player.id === playerId) && !loanOfferDecisions.has(playerId)) {
+      loanOfferDecisions.set(playerId, 'refused');
+    }
     if (pendingAIOffers.some(o => o.player.id === playerId) && !offerDecisions.has(playerId)) {
       offerDecisions.set(playerId, 'refused');
     }
+    // Un giocatore che lascia la rosa (venduto/prestato/svincolato da
+    // qualunque percorso) non ha più senso resti "in lista": senza questo,
+    // riacquistandolo in una sessione futura tornerebbe già spuntato come
+    // disponibile per un motivo che non esiste più.
+    playerTransferListed.delete(playerId);
+    playerLoanListed.delete(playerId);
   };
   const filter = { role: '', position: '', ageMin: 16, ageMax: 40, strMin: 0, strMax: 100, priceMin: 0, priceMax: 250, availability: 'all' };
   const loanFilter = { role: '', position: '', ageMin: 16, ageMax: 40, strMin: 0, strMax: 100 };
@@ -9479,6 +11069,11 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
   // prezzo, i pre-contratti sono sempre a parametro zero), stato separato
   // così non si mescola con quello delle altre tab.
   const preContractFilter = { role: '', position: '', ageMin: 16, ageMax: 40, strMin: 0, strMax: 100 };
+  // Filtri della tab Panchina (§ richiesta esplicita dell'utente: la lista
+  // era tagliata a 25 risultati e non c'era modo di restringerla) — niente
+  // ruolo/posizione/età (non si applicano a uno staff), ma forza/personalità/
+  // modulo preferito sì.
+  const coachFilter = { strMin: 0, strMax: 100, personality: '', formation: '' };
   let coachCandidates = []; // ricostruito a ogni render della tab Panchina: idx → coach da freeCoaches
   let coachBuyCandidates = []; // ricostruito a ogni render della tab Panchina: idx → { coach, fromTeam } acquistabili a pagamento
   let loanCandidates = []; // ricostruito a ogni render della tab Prestiti: idx → { player, fromTeam }
@@ -9487,6 +11082,8 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
   let coachAvail = 'all'; // vista tab Panchina: 'all' | 'free' | 'market'
   let moduliView = 'modulo'; // vista tab Moduli: 'modulo' | 'best11'
   let moduliFormation = null; // modulo selezionato nella tab Moduli (lazy: parte dall'attivo)
+  let rosaSortKey = 'role', rosaSortDir = 'asc'; // ordinamento tabella tab Rosa (click intestazione)
+  let rosaExpandedId = null; // player.id le cui 6 azioni sono aperte nel modale "Espandi"
 
   // Azioni per-riga nella tab Rosa (Rinnova/Vendi/Presta sempre disponibili
   // per ogni giocatore): le proposte di acquisto/prestito si generano una
@@ -9548,8 +11145,16 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
       const secondBtn = gateWinter
         ? `<button class="mm-btn" data-action="decline-renew" data-pid="${player.id}">Non rinnovare ora</button>`
         : `<button class="mm-btn mm-red" data-action="release" data-pid="${player.id}">Svincola</button>`;
+      // Anteprima durata (§ richiesta esplicita dell'utente: non si vedeva da
+      // nessuna parte prima di proporre il rinnovo) — calcolata una volta e
+      // riusata identica alla conferma vera (vedi previewRenewalOutcome).
+      const previewOutcome = overCap ? null : previewRenewalOutcome(player, playerTeam);
+      const durationNote = previewOutcome === null ? ''
+        : previewOutcome === 0
+          ? `<span style="font-size:.75rem;color:#b91c1c;font-weight:600">${icon('warning')} rischia di rifiutare</span>`
+          : `<span style="font-size:.78rem;color:#666">Durata proposta: <strong>${previewOutcome} ${previewOutcome === 1 ? 'anno' : 'anni'}</strong></span>`;
       return `<div class="mm-row">
-        <div class="mm-pinfo">${formatNationality(player)}<span class="mm-name">${player.firstName} ${player.lastName}</span>${formatRoleBadges(player)}<span style="font-size:.78rem;color:#666">${formatSubRoles(player)}</span><span>${player.age}a</span><span>⚡${player.strength}</span><span class="mm-salary-chg">${formatMoneyK(annualSalary(current))}€ → <strong>${formatMoneyK(annualSalary(demanded))}€</strong>/anno</span>${interestNote}</div>
+        <div class="mm-pinfo">${formatNationality(player)}<span class="mm-name">${player.firstName} ${player.lastName}</span>${formatRoleBadges(player)}<span style="font-size:.78rem;color:#666">${formatSubRoles(player)}</span><span>${player.age}a</span><span>⚡${player.strength}</span><span class="mm-salary-chg">${formatMoneyK(annualSalary(current))}€ → <strong>${formatMoneyK(annualSalary(demanded))}€</strong>/anno</span>${durationNote}${interestNote}</div>
         <div class="mm-acts">
           ${renewBtn}
           ${secondBtn}
@@ -9558,10 +11163,10 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
   };
 
   const buildOfferteTab = () => {
-    if (!pendingAIOffers.length) return '<p class="mm-empty">Nessuna offerta ricevuta.</p>';
-    return pendingAIOffers.map(({ player, buyerTeam, offerPrice }) => {
+    if (!pendingAIOffers.length && !pendingAILoanOffers.length) return '<p class="mm-empty">Nessuna offerta ricevuta.</p>';
+    const transferRows = pendingAIOffers.map(({ player, buyerTeam, offerPrice, listed }) => {
       const d = offerDecisions.get(player.id);
-      if (d === 'accepted') return `<div class="mm-row mm-done">${icon('check')} <strong>${player.firstName} ${player.lastName}</strong> venduto a ${buyerTeam.name} — ${offerPrice.toFixed(1)}M€</div>`;
+      if (d === 'accepted') return `<div class="mm-row mm-done">${icon('check')} <strong>${player.firstName} ${player.lastName}</strong> venduto a ${buyerTeam.name} (Serie ${buyerTeam.leagueLevel}) — ${offerPrice.toFixed(1)}M€</div>`;
       if (d === 'refused') {
         // Il rifiuto può arrivare sia da un click esplicito su "Rifiuta" (il
         // giocatore resta in rosa) sia perché nel frattempo è stato ceduto/
@@ -9571,14 +11176,43 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
         const stillHere = playerTeam.roster.includes(player);
         return `<div class="mm-row mm-done">${icon('cross')} Offerta rifiutata — <strong>${player.firstName} ${player.lastName}</strong> ${stillHere ? 'rimane' : 'nel frattempo ha lasciato la rosa'}</div>`;
       }
+      // Distingue le due origini possibili (§ "metti in lista trasferimento"):
+      // un'offerta "Sorpresa" nasce da un tuo esubero senza che tu abbia fatto
+      // nulla (premio 110-140%, il compratore deve convincerti); un'offerta
+      // "Da lista" arriva perché TU hai dichiarato il giocatore disponibile
+      // (prezzo normale 90-120%, nessun premio: hai già acconsentito tu).
+      const originTag = listed
+        ? `<span style="font-size:.72rem;font-weight:700;color:#2f6fed;background:#eef4ff;padding:1px 7px;border-radius:8px" title="Il giocatore era nella tua lista trasferimento">📋 Da lista</span>`
+        : `<span style="font-size:.72rem;font-weight:700;color:#b45309;background:#fff3e0;padding:1px 7px;border-radius:8px" title="Approccio non richiesto: la CPU lo vuole comunque, premio sul prezzo">✨ Sorpresa</span>`;
       return `<div class="mm-row">
-        <div class="mm-pinfo">${formatNationality(player)}<span class="mm-name">${player.firstName} ${player.lastName}</span>${formatRoleBadges(player)}<span style="font-size:.78rem;color:#666">${formatSubRoles(player)}</span><span>${player.age}a</span><span>⚡${player.strength}</span><span class="mm-buyer-tag">🏟️ ${buyerTeam.name}</span></div>
+        <div class="mm-pinfo">${formatNationality(player)}<span class="mm-name">${player.firstName} ${player.lastName}</span>${formatRoleBadges(player)}<span style="font-size:.78rem;color:#666">${formatSubRoles(player)}</span><span>${player.age}a</span><span>⚡${player.strength}</span><span class="mm-buyer-tag">🏟️ ${buyerTeam.name} <span style="font-size:.78rem;color:#666">(Serie ${buyerTeam.leagueLevel})</span></span>${originTag}</div>
         <div class="mm-acts">
           <strong class="mm-price">${offerPrice.toFixed(1)}M€</strong>
           <button class="mm-btn mm-green" data-action="accept-offer" data-pid="${player.id}">Accetta</button>
           <button class="mm-btn mm-red"   data-action="refuse-offer" data-pid="${player.id}">Rifiuta</button>
         </div></div>`;
     }).join('');
+    // Richieste di prestito: stesso principio (nascono dal turno di una CPU
+    // vera, mai un'accettazione automatica), ma senza cartellino — sono nate
+    // solo per i giocatori che TU hai messo in lista prestito.
+    const loanRows = pendingAILoanOffers.map(({ player, loanTeam }) => {
+      const d = loanOfferDecisions.get(player.id);
+      if (d === 'accepted') return `<div class="mm-row mm-done">${icon('check')} <strong>${player.firstName} ${player.lastName}</strong> in prestito a ${loanTeam.name} (Serie ${loanTeam.leagueLevel})</div>`;
+      if (d === 'refused') {
+        const stillHere = playerTeam.roster.includes(player);
+        return `<div class="mm-row mm-done">${icon('cross')} Richiesta di prestito rifiutata — <strong>${player.firstName} ${player.lastName}</strong> ${stillHere ? 'rimane' : 'nel frattempo ha lasciato la rosa'}</div>`;
+      }
+      return `<div class="mm-row">
+        <div class="mm-pinfo">${formatNationality(player)}<span class="mm-name">${player.firstName} ${player.lastName}</span>${formatRoleBadges(player)}<span style="font-size:.78rem;color:#666">${formatSubRoles(player)}</span><span>${player.age}a</span><span>⚡${player.strength}</span><span class="mm-buyer-tag">${icon('cycle')} ${loanTeam.name} <span style="font-size:.78rem;color:#666">(Serie ${loanTeam.leagueLevel})</span></span></div>
+        <div class="mm-acts">
+          <strong class="mm-price">Prestito</strong>
+          <button class="mm-btn mm-green" data-action="accept-loan-offer" data-pid="${player.id}">Accetta</button>
+          <button class="mm-btn mm-red"   data-action="refuse-loan-offer" data-pid="${player.id}">Rifiuta</button>
+        </div></div>`;
+    }).join('');
+    const transferSection = transferRows ? `<div class="mm-section-title">${icon('money')} Offerte di acquisto</div>${transferRows}` : '';
+    const loanSection = loanRows ? `<div class="mm-section-title">${icon('cycle')} Richieste di prestito</div>${loanRows}` : '';
+    return transferSection + loanSection;
   };
 
   const buildRosaTab = () => {
@@ -9620,8 +11254,7 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
 
     if (!all.length) return '<p class="mm-empty">Rosa vuota.</p>';
 
-    const roleOrder = ROLE_ORDER;
-    const sorted = [...all].sort((a, b) => (roleOrder[a.role] - roleOrder[b.role]) || b.strength - a.strength);
+    const sorted = sortPlayersBy(all, ROSTER_SORT_KEYS, rosaSortKey, rosaSortDir);
 
     // Conteggio della rosa attuale (chi scende in campo questa stagione):
     // include i giocatori in prestito in ingresso, che contano a tutti gli
@@ -9710,12 +11343,36 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
         const loanTitle = locked ? lockedTitle : sessLocked ? sessLockedTitle : preContracted ? preContractedTitle : canLoan ? '' : 'title="Sei già al minimo di ruolo"';
         const sellBlocked = locked || sessLocked || preContracted;
         const sellTitle = locked ? lockedTitle : sessLocked ? sessLockedTitle : preContracted ? preContractedTitle : '';
-        actionsCell = `<td class="rosa-actions">
-          <button class="mm-btn mm-green" data-action="rosa-open-sell" data-pid="${p.id}" style="font-size:.72rem;padding:2px 7px" ${sellBlocked ? `disabled ${sellTitle}` : ''}>Vendi</button>
-          <button class="mm-btn mm-blue" data-action="rosa-open-loan" data-pid="${p.id}" style="font-size:.72rem;padding:2px 7px" ${canLoan ? '' : `disabled ${loanTitle}`}>Presta</button>
-          <button class="mm-btn mm-blue" data-action="rosa-toggle-renew" data-pid="${p.id}" style="font-size:.72rem;padding:2px 7px">${panel === 'renew' ? '▲ Rinnova' : 'Rinnova'}</button>
-          <button class="mm-btn mm-red" data-action="rosa-release" data-pid="${p.id}" style="font-size:.72rem;padding:2px 7px" ${canRelease ? '' : 'disabled'} ${releaseTitle}>Svincola (${releaseCost.toFixed(1)}M€)</button>
-        </td>`;
+        // "Metti in lista" è un'azione GRATUITA (come Rinnovi/Allenatore/
+        // Moduli): non consuma il turno, quindi non è bloccata da `locked`
+        // (offerta ricevuta da risolvere) — solo da chi ha già impegnato il
+        // giocatore altrove questa sessione o con un pre-contratto. Le azioni
+        // "subito" restano invece vere azioni di mercato, bloccate come prima.
+        const listBlocked = sessLocked || preContracted;
+        const listBlockedTitle = sessLocked ? sessLockedTitle : preContracted ? preContractedTitle : '';
+        const canLoanList = canLoanOutPlayer(playerTeam, p) && !sessLocked && !preContracted;
+        const listedForTransfer = playerTransferListed.has(p.id);
+        const listedForLoan = playerLoanListed.has(p.id);
+        const isExpanded = rosaExpandedId === p.id;
+        if (!isExpanded) {
+          actionsCell = `<td style="text-align:center;vertical-align:middle">
+            <span data-action="rosa-expand-actions" data-pid="${p.id}" style="cursor:pointer;color:#2f6fed;font-weight:600;font-size:.85rem;user-select:none">Espandi ▾</span>
+          </td>`;
+        } else {
+          // Griglia 2 colonne compatta esistente (.rosa-actions in style.css),
+          // direttamente nella cella Azioni — non una riga a parte a piena
+          // larghezza (§ l'utente ha esplicitamente chiesto lo stesso bordo/
+          // dimensione delle altre righe, non un blocco più grande).
+          actionsCell = `<td class="rosa-actions">
+            <span data-action="rosa-expand-actions" data-pid="${p.id}" style="grid-column:1/-1;text-align:center;cursor:pointer;color:#2f6fed;font-weight:600;font-size:.8rem;user-select:none">Espandi ▴</span>
+            <button class="mm-btn ${listedForTransfer ? 'mm-blue' : 'mm-green'}" data-action="rosa-toggle-transfer-list" data-pid="${p.id}" ${listBlocked ? `disabled ${listBlockedTitle}` : ''} title="Azione gratuita: non consuma il turno. Rende il giocatore visibile alle CPU, che potranno farti un'offerta vera nelle Offerte ricevute.">${listedForTransfer ? `${icon('check')} In lista (togli)` : '📋 Lista trasferimento'}</button>
+            <button class="mm-btn mm-green" data-action="rosa-open-sell" data-pid="${p.id}" ${sellBlocked ? `disabled ${sellTitle}` : ''} title="Vendita immediata a sconto: più veloce ma meno redditizia che aspettare un'offerta da listato.">Svendita subito</button>
+            <button class="mm-btn ${listedForLoan ? 'mm-blue' : ''}" data-action="rosa-toggle-loan-list" data-pid="${p.id}" ${canLoanList ? '' : `disabled ${loanTitle}`} title="Azione gratuita: non consuma il turno.">${listedForLoan ? `${icon('check')} In lista (togli)` : '🔄 Lista prestito'}</button>
+            <button class="mm-btn mm-blue" data-action="rosa-open-loan" data-pid="${p.id}" ${canLoan ? '' : `disabled ${loanTitle}`}>Prestito subito</button>
+            <button class="mm-btn mm-blue" data-action="rosa-toggle-renew" data-pid="${p.id}">${panel === 'renew' ? '▲ Rinnova' : 'Rinnova'}</button>
+            <button class="mm-btn mm-red" data-action="rosa-release" data-pid="${p.id}" ${canRelease ? '' : 'disabled'} ${releaseTitle}>Svincola (${releaseCost.toFixed(1)}M€)</button>
+          </td>`;
+        }
       }
 
       const mainRow = `<tr class="db-row-clickable" data-player-id="${p.id}" style="${rowStyle}">
@@ -9730,12 +11387,16 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
       let panelRow = '';
       if (panel === 'renew') {
         const previewSalary = getRenewalSalary(p);
+        const previewOutcome = previewRenewalOutcome(p, playerTeam);
+        const durationText = previewOutcome === 0
+          ? `<span style="color:#b91c1c;font-weight:700">${icon('warning')} rischia di rifiutare l'offerta</span>`
+          : `<strong>${previewOutcome} ${previewOutcome === 1 ? 'anno' : 'anni'}</strong>`;
         const refusalReason = rosaRenewRefusals.get(p.id);
         const refusalNote = refusalReason
           ? `<div style="color:#b45309;font-weight:600;margin-top:4px">${icon('warning')} Ha rifiutato la proposta precedente (${refusalReason}) — puoi riprovare.</div>`
           : '';
         panelRow = `<tr class="rosa-panel-row"><td colspan="10">
-          <strong>Rinnova ${p.firstName} ${p.lastName}</strong> — stipendio e durata concordati col procuratore, in base alla forza attuale: <strong>${formatMoneyK(annualSalary(previewSalary))}€/anno</strong>
+          <strong>Rinnova ${p.firstName} ${p.lastName}</strong> — stipendio e durata concordati col procuratore, in base alla forza attuale: <strong>${formatMoneyK(annualSalary(previewSalary))}€/anno</strong> · ${durationText}
           <button class="mm-btn mm-green" data-action="rosa-confirm-renew" data-pid="${p.id}">Proponi rinnovo</button>
           ${refusalNote}
         </td></tr>`;
@@ -9746,8 +11407,18 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
     const warning = playerTeam.budget < 0
       ? `<div style="background:#fdecea;border:1px solid #ef4444;border-radius:6px;padding:8px 12px;margin-bottom:10px;color:#b91c1c;font-weight:600">${icon('warning')} Budget negativo (${playerTeam.budget.toFixed(1)}M€) — vendi qualche giocatore col bottone "Vendi" prima di proseguire.</div>`
       : '';
-    return `${warning}${summary}<table style="font-size:.85rem">
-      <thead><tr><th class="col-naz">Naz.</th><th>Nome</th><th>Ruolo</th><th>Posizione</th><th>Età</th><th>Forza</th><th>Stipendio</th><th>Stato</th><th>Azioni</th></tr></thead>
+    return `${warning}${summary}<table style="font-size:.95rem">
+      <thead><tr>
+        <th class="col-naz">Naz.</th>
+        ${sortableTh('Nome', 'nome', rosaSortKey, rosaSortDir, 'rosa-sort')}
+        ${sortableTh('Ruolo', 'role', rosaSortKey, rosaSortDir, 'rosa-sort')}
+        <th>Posizione</th>
+        ${sortableTh('Età', 'age', rosaSortKey, rosaSortDir, 'rosa-sort')}
+        ${sortableTh('Forza', 'strength', rosaSortKey, rosaSortDir, 'rosa-sort')}
+        ${sortableTh('Stipendio', 'salary', rosaSortKey, rosaSortDir, 'rosa-sort')}
+        ${sortableTh('Scad.', 'contract', rosaSortKey, rosaSortDir, 'rosa-sort')}
+        <th>Azioni</th>
+      </tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
   };
@@ -9756,6 +11427,11 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
     const coach = playerTeam.coach;
     let html = '';
     const expired = coach && (coach.contract?.duration || 0) <= 0;
+    // Personalità in un badge compatto: tooltip con descrizione+bonus/malus
+    // (stesso testo della scheda staff, § richiesta esplicita dell'utente di
+    // vederla anche qui invece di dover aprire la scheda a parte) — vedi
+    // coachPersonalityBadgeHtml, condivisa top-level anche con la finestra partita.
+    const personalityBadgeHtml = coachPersonalityBadgeHtml;
 
     // ── Allenatore attuale ────────────────────────────────────────────────
     if (coach && expired) {
@@ -9768,6 +11444,7 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
           <span>⚡${coach.strength}</span>
           <span class="mm-badge" title="${formatFormationRequirements(activeFormation)}">${(coach.formations || []).join(' / ')}</span>
           <span style="font-size:.8rem;color:${fit.color};font-weight:600">${fit.text}</span>
+          ${personalityBadgeHtml(coach)}
           <span class="mm-salary-tag">${icon('briefcase')} ${formatMoneyK(annualSalary(getDisplaySalary(coach.strength)))}€/anno</span>
           <span style="font-size:.8rem;color:#b91c1c;font-weight:700">${icon('warning')} contratto scaduto</span>
         </div>
@@ -9789,6 +11466,7 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
           <span>⚡${coach.strength}</span>
           <span class="mm-badge" title="${formatFormationRequirements(activeFormation)}">${(coach.formations || []).join(' / ')}</span>
           <span style="font-size:.8rem;color:${fit.color};font-weight:600">${fit.text}</span>
+          ${personalityBadgeHtml(coach)}
           <span class="mm-salary-tag">${icon('briefcase')} ${formatMoneyK(annualSalary(coach.contract?.salary ?? getDisplaySalary(coach.strength)))}€/anno</span>
           <span style="font-size:.8rem;color:#666">Contratto: ${coach.contract.duration}a</span>
         </div>
@@ -9809,6 +11487,7 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
       : '';
     const seg = (val, label) => `<button type="button" class="mm-seg${coachAvail === val ? ' active' : ''}" data-coach-avail="${val}">${label}</button>`;
     html += `<div class="mm-seg-group" style="margin:2px 2px 12px">${seg('all', 'Tutti')}${seg('free', '🆓 Svincolati')}${seg('market', '🛒 Sul mercato')}</div>`;
+    html += buildCoachFilterBar(coachFilter);
 
     const showFree = coachAvail !== 'market';
     const showMarket = coachAvail !== 'free';
@@ -9835,6 +11514,7 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
           <span>⚡${c.strength}</span>
           <span class="mm-badge" style="cursor:pointer;text-decoration:underline dotted" title="Clicca per vedere i moduli — ${formatFormationRequirements(candFormation)}" data-action="view-coach-formations" data-cand-idx="${i}" data-cand-kind="free">${(c.formations || []).join(' / ')}</span>
           <span style="font-size:.8rem;color:${fit.color};font-weight:600">${fit.text}</span>
+          ${personalityBadgeHtml(c)}
           <span class="mm-salary-tag">${icon('briefcase')} ${formatMoneyK(annualSalary(getDisplaySalary(c.strength)))}€/anno</span>
           <span style="font-size:.75rem;color:#15803d">🆓 svincolato</span>
           ${swapNote}
@@ -9858,6 +11538,7 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
           <span>⚡${c.strength}</span>
           <span class="mm-badge" style="cursor:pointer;text-decoration:underline dotted" title="Clicca per vedere i moduli — ${formatFormationRequirements(candFormation)}" data-action="view-coach-formations" data-cand-idx="${i}" data-cand-kind="market">${(c.formations || []).join(' / ')}</span>
           <span style="font-size:.8rem;color:${fit.color};font-weight:600">${fit.text}</span>
+          ${personalityBadgeHtml(c)}
           <span class="mm-salary-tag">${icon('briefcase')} ${formatMoneyK(annualSalary(getDisplaySalary(c.strength)))}€/anno</span>
           <span class="mm-from-tag">da ${fromTeam.name}</span>
           ${swapNote}
@@ -9869,14 +11550,22 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
         </div></div>`;
     };
 
+    // Filtri forza/personalità/modulo (§ richiesta esplicita dell'utente: la
+    // lista era tagliata ai primi 25 e non c'era modo di restringerla) —
+    // niente più slice, si vedono TUTTI i candidati che passano i filtri.
+    const matchesCoachFilter = (c) => {
+      if (c.strength < coachFilter.strMin || c.strength > coachFilter.strMax) return false;
+      if (coachFilter.personality && c.personality?.type !== coachFilter.personality) return false;
+      if (coachFilter.formation && !(c.formations || []).includes(coachFilter.formation)) return false;
+      return true;
+    };
     const coachCap = leagueStrCap(playerTeam.leagueLevel);
-    coachCandidates = [...freeCoaches].filter(c => c.strength <= coachCap).sort((a, b) => b.strength - a.strength).slice(0, 25);
+    coachCandidates = [...freeCoaches].filter(c => c.strength <= coachCap && matchesCoachFilter(c)).sort((a, b) => b.strength - a.strength);
     const coachBuyCap = leagueStrCap(playerTeam.leagueLevel);
     coachBuyCandidates = [...serieA, ...serieB, ...serieC]
-      .filter(t => t !== playerTeam && t.coach && t.coach.strength <= coachBuyCap)
+      .filter(t => t !== playerTeam && t.coach && t.coach.strength <= coachBuyCap && matchesCoachFilter(t.coach))
       .map(t => ({ coach: t.coach, fromTeam: t }))
-      .sort((a, b) => b.coach.strength - a.coach.strength)
-      .slice(0, 25);
+      .sort((a, b) => b.coach.strength - a.coach.strength);
 
     if (coachAvail === 'all') {
       // "🌱 Promuovi un emergente" resta un'offerta speciale sempre in cima,
@@ -10025,8 +11714,13 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
       const overCap = !preContractWageBillAllows(playerTeam, salary);
       const disabled = !canAdd || overCap;
       const label = !canAdd ? `${icon('banned')} Tetto stranieri` : overCap ? `${icon('banned')} Monte ingaggi` : 'Firma Pre-contratto';
+      // La durata vera si estrae solo al momento della firma (signPreContract),
+      // stessa formula di createContract — qui, come per l'Area Scout, si può
+      // solo mostrare il range possibile prima di firmare, non il valore esatto.
+      const [minDur, maxDur] = getContractDurationRange(p.strength, p.age);
+      const durRangeTag = `<span style="font-size:.78rem;color:#666" title="Durata del nuovo contratto, decisa (in questo range) al momento della firma">📄 ${minDur === maxDur ? `${minDur}a` : `${minDur}-${maxDur}a`}</span>`;
       return `<div class="mm-row">
-      <div class="mm-pinfo">${formatNationality(p)}<span class="mm-name">${p.firstName} ${p.lastName}</span>${formatRoleBadges(p)}<span style="font-size:.78rem;color:#666">${formatSubRoles(p)}</span><span>${p.age}a</span><span>⚡${p.strength}</span><span class="mm-salary-tag">${icon('briefcase')} ${formatMoneyK(annualSalary(salary))}€/anno</span><span class="mm-from-tag">da ${fromTeam.name}</span></div>
+      <div class="mm-pinfo">${formatNationality(p)}<span class="mm-name">${p.firstName} ${p.lastName}</span>${formatRoleBadges(p)}<span style="font-size:.78rem;color:#666">${formatSubRoles(p)}</span><span>${p.age}a</span><span>⚡${p.strength}</span><span class="mm-salary-tag">${icon('briefcase')} ${formatMoneyK(annualSalary(salary))}€/anno</span>${durRangeTag}<span class="mm-from-tag">da ${fromTeam.name}</span></div>
       <div class="mm-acts"><strong class="mm-price">Gratis (pross. stagione)</strong><button class="mm-btn mm-green" data-action="precontract" data-cand-idx="${i}" ${disabled ? 'disabled' : ''}>${label}</button></div></div>`;
     }).join('');
     return html;
@@ -10092,6 +11786,10 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
         const canAfford = playerTeam.budget >= t.cost;
         const overCap = !wageCapAllows(playerTeam, t.salary);
         const label = acquistiLocked ? 'Rispondi prima alle offerte' : atCap ? `${icon('banned')} Tetto stranieri` : overCap ? `${icon('banned')} Monte ingaggi` : canAfford ? 'Acquista' : 'Fondi insuff.';
+        // Un candidato dell'Area Scout non ha ancora un contratto reale (si
+        // genera solo alla firma, materializeForeignCandidate/createContract):
+        // qui si può mostrare solo il range possibile, non un valore esatto.
+        const [scoutMinDur, scoutMaxDur] = getContractDurationRange(t.strength, t.age);
         html += `<div class="mm-row">
           <div class="mm-pinfo">
             ${formatNationality(t)}<span class="mm-name">${t.firstName} ${t.lastName}</span>
@@ -10100,6 +11798,7 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
             <span>${t.age}a</span>
             <span>⚡${t.strength}</span>
             <span class="mm-salary-tag">${icon('briefcase')} ${formatMoneyK(annualSalary(t.salary))}€/anno</span>
+            <span style="font-size:.78rem;color:#666" title="Durata del nuovo contratto, decisa (in questo range) al momento della firma">📄 ${scoutMinDur === scoutMaxDur ? `${scoutMinDur}a` : `${scoutMinDur}-${scoutMaxDur}a`}</span>
             <span class="mm-from-tag">da ${t.fromClub}</span>
             <span style="font-size:.72rem;color:#2f6fed;font-weight:600">🏷️ -${Math.round(t.discount * 100)}%</span>
           </div>
@@ -10122,8 +11821,18 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
         const salary = p.contract?.salary ?? getDisplaySalary(p.strength);
         const overCap = !wageCapAllows(playerTeam, salary);
         const label = acquistiLocked ? 'Rispondi prima alle offerte' : overCap ? `${icon('banned')} Monte ingaggi` : canAfford ? 'Acquista' : 'Fondi insuff.';
+        // Un trasferimento a pagamento NON rinegozia il contratto: eredit i
+        // esattamente gli anni residui che il giocatore aveva col vecchio
+        // club (stessa regola già in vigore per i trasferimenti CPU-vs-CPU,
+        // vedi executeBuyOption) — prima questa durata non si vedeva da
+        // nessuna parte nella tab Acquisti, a differenza dello stipendio.
+        const durVal = p.contract?.duration;
+        const durWarn = Number.isFinite(durVal) && durVal <= 1;
+        const durTag = Number.isFinite(durVal)
+          ? `<span style="font-size:.78rem;color:${durWarn ? '#b91c1c' : '#666'};font-weight:${durWarn ? '700' : '400'}" title="Anni di contratto residui con l'attuale club — restano invariati dopo l'acquisto">📄 ${durVal}a${durWarn ? ` ${icon('warning')}` : ''}</span>`
+          : '';
         html += `<div class="mm-row">
-          <div class="mm-pinfo">${formatNationality(p)}<span class="mm-name">${p.firstName} ${p.lastName}</span>${formatRoleBadges(p)}<span style="font-size:.78rem;color:#666">${formatSubRoles(p)}</span><span>${p.age}a</span><span>⚡${p.strength}</span><span class="mm-salary-tag">${icon('briefcase')} ${formatMoneyK(annualSalary(salary))}€/anno</span><span class="mm-from-tag">da ${fromTeam.name}</span></div>
+          <div class="mm-pinfo">${formatNationality(p)}<span class="mm-name">${p.firstName} ${p.lastName}</span>${formatRoleBadges(p)}<span style="font-size:.78rem;color:#666">${formatSubRoles(p)}</span><span>${p.age}a</span><span>⚡${p.strength}</span><span class="mm-salary-tag">${icon('briefcase')} ${formatMoneyK(annualSalary(salary))}€/anno</span>${durTag}<span class="mm-from-tag">da ${fromTeam.name}</span></div>
           <div class="mm-acts">
             <strong class="mm-price">${askingPrice.toFixed(1)}M€</strong>
             <button class="mm-btn mm-blue" data-action="buy-market" data-pid="${p.id}" ${(canAfford && !overCap && !acquistiLocked) ? '' : 'disabled'}>
@@ -10139,11 +11848,12 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
         const overCap = !wageCapAllows(playerTeam, salary);
         const faDisabled = overCap || acquistiLocked;
         const faLabel = acquistiLocked ? 'Rispondi prima alle offerte' : overCap ? `${icon('banned')} Monte ingaggi` : 'Firma';
+        const [faMinDur, faMaxDur] = getContractDurationRange(p.strength, p.age);
         html += `<div class="mm-row">
           <div class="mm-pinfo">${formatNationality(p)}<span class="mm-name">${p.firstName} ${p.lastName}</span>${formatRoleBadges(p)}<span style="font-size:.78rem;color:#666">${formatSubRoles(p)}</span><span>${p.age}a</span><span>⚡${p.strength}</span><span class="mm-salary-tag">${icon('briefcase')} ${formatMoneyK(annualSalary(salary))}€/anno</span><span class="mm-free-tag">Svincolato</span></div>
           <div class="mm-acts">
             <strong class="mm-price">Gratis</strong>
-            ${faDisabled ? '' : durationSelectHtml('data-dur-sign', p.id)}
+            ${faDisabled ? '' : durationSelectHtml('data-dur-sign', p.id, undefined, faMinDur, faMaxDur)}
             <button class="mm-btn mm-blue" data-action="buy-fa" data-pid="${p.id}" ${faDisabled ? 'disabled' : ''}>${faLabel}</button>
           </div></div>`;
       });
@@ -10155,7 +11865,8 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
   };
 
   const pendingCount = () => pendingRenewals.filter(p => !renewalDecisions.has(p.id)).length
-    + pendingAIOffers.filter(o => !offerDecisions.has(o.player.id)).length;
+    + pendingAIOffers.filter(o => !offerDecisions.has(o.player.id)).length
+    + pendingAILoanOffers.filter(o => !loanOfferDecisions.has(o.player.id)).length;
 
   // Tab "Notizie" dentro la finestra di mercato: stessi dati/helper della
   // Gazzetta del Pallone (e dello stesso pannello embedded nella finestra
@@ -10204,7 +11915,8 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
                   : buildRosaTab();
 
     const renewPending = pendingRenewals.filter(p => !renewalDecisions.has(p.id)).length;
-    const offerPending = pendingAIOffers.filter(o => !offerDecisions.has(o.player.id)).length;
+    const offerPending = pendingAIOffers.filter(o => !offerDecisions.has(o.player.id)).length
+      + pendingAILoanOffers.filter(o => !loanOfferDecisions.has(o.player.id)).length;
     const needsCoach = !playerTeam.coach || (playerTeam.coach.contract?.duration || 0) <= 0;
     const rosterCount = getEffectiveRosterCount(playerTeam);
     const belowMinRoster = rosterCount < PLAYER_ROSTER_MIN_TO_PROCEED;
@@ -10288,6 +12000,7 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
     }
 
     wireFilterBar(overlay, activeTab === 'prestiti' ? loanFilter : activeTab === 'precontratti' ? preContractFilter : filter, render);
+    wireCoachFilterBar(overlay, coachFilter, render);
     wireBudgetSlider(overlay, playerTeam, render);
     overlay.querySelectorAll('[data-coach-avail]').forEach(btn =>
       btn.addEventListener('click', () => { coachAvail = btn.dataset.coachAvail; render(); })
@@ -10298,6 +12011,14 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
     overlay.querySelectorAll('[data-moduli-formation]').forEach(btn =>
       btn.addEventListener('click', () => { moduliFormation = btn.dataset.moduliFormation; render(); })
     );
+    overlay.querySelectorAll('th[data-rosa-sort]').forEach(th => {
+      th.addEventListener('click', () => {
+        const key = th.dataset.rosaSort;
+        rosaSortDir = (rosaSortKey === key && rosaSortDir === 'asc') ? 'desc' : 'asc';
+        rosaSortKey = key;
+        render();
+      });
+    });
 
     overlay.querySelectorAll('tr[data-player-id]').forEach(tr => {
       tr.addEventListener('click', (e) => {
@@ -10344,7 +12065,7 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
               // stipendio e durata "concordati col procuratore", con un
               // vero rischio di rifiuto in base a personalità/prestigio/
               // adeguatezza alla squadra, esattamente come per la CPU.
-              const outcome = computeRenewalOutcome(p, playerTeam);
+              const outcome = consumeRenewalOutcome(p, playerTeam);
               if (outcome === 0) {
                 const reason = getRenewalRefusalReason(p);
                 transferLog.push(`${icon('clipboard')} <em>${p.firstName} ${p.lastName}</em> rifiuta il rinnovo con <strong>${playerTeam.name}</strong> (${reason})`);
@@ -10394,7 +12115,7 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
             buyerTeam.budget -= offerPrice;
             recalculateTeamStrength(buyerTeam);
             recordTransfer(p, buyerTeam.name, offerPrice);
-            transferLog.push(`${icon('money')} <strong>${playerTeam.name}</strong> vende ${p.firstName} ${p.lastName} a <strong>${buyerTeam.name}</strong> per <strong>${offerPrice.toFixed(1)}M€</strong>`);
+            transferLog.push(`${icon('cycle')} <strong>${playerTeam.name}</strong> → <strong>${buyerTeam.name}</strong>: ${p.firstName} ${p.lastName} (${p.age} anni, Forza: ${p.strength}) per <strong>${offerPrice.toFixed(1)}M€</strong>`);
             offerDecisions.set(id, 'accepted');
             soldIds.add(id);
             lockForSession(p);
@@ -10412,6 +12133,23 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
           // Un'offerta rifiutata NON consuma il turno di nessuno — la squadra
           // offerente potrà riprovare con qualcun altro ai turni successivi.
           if (turnCtx && turnCtx.onOfferResolved && refusedOffer) turnCtx.onOfferResolved(refusedOffer.buyerTeam, refusedOffer.player, false);
+        } else if (action === 'accept-loan-offer') {
+          // Simmetrico ad accept-offer, ma per una richiesta di prestito su un
+          // giocatore messo in lista prestito: esegue il prestito vero
+          // (executeLoanOutTo, stessa funzione della tab Rosa → Presta) e
+          // consuma il turno della squadra RICHIEDENTE, non il tuo.
+          const loanOffer = pendingAILoanOffers.find(o => o.player.id === id);
+          if (loanOffer && !loanOfferDecisions.has(id) && playerTeam.roster.includes(loanOffer.player) && canLoanOutPlayer(playerTeam, loanOffer.player)) {
+            const { player: p, loanTeam } = loanOffer;
+            executeLoanOutTo(p, loanTeam);
+            loanOfferDecisions.set(id, 'accepted');
+            playerLoanListed.delete(id);
+            if (turnCtx && turnCtx.onLoanOfferResolved) turnCtx.onLoanOfferResolved(loanTeam, p, true);
+          }
+        } else if (action === 'refuse-loan-offer') {
+          const refusedLoanOffer = pendingAILoanOffers.find(o => o.player.id === id);
+          loanOfferDecisions.set(id, 'refused');
+          if (turnCtx && turnCtx.onLoanOfferResolved && refusedLoanOffer) turnCtx.onLoanOfferResolved(refusedLoanOffer.loanTeam, refusedLoanOffer.player, false);
         } else if (action === 'buy-fa') {
           const p = freeAgents.find(p => p.id === id);
           const salaryFa = p ? getDisplaySalary(p.strength) : 0;
@@ -10423,7 +12161,7 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
             p.contract.duration = years;
             recalculateTeamStrength(playerTeam);
             recordTransfer(p, playerTeam.name, 0);
-            transferLog.push(`✍️ <strong>${playerTeam.name}</strong> ingaggia ${p.firstName} ${p.lastName} (Forza: ${p.strength}) — contratto ${years} anni`);
+            transferLog.push(`✍️ <strong>${playerTeam.name}</strong> ingaggia lo svincolato ${p.firstName} ${p.lastName} (${p.age} anni, Forza: ${p.strength}) — contratto ${years} anni`);
             boughtIds.add(id);
             lockForSession(p);
             turnConsumed = true;
@@ -10443,7 +12181,7 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
             recalculateTeamStrength(fromTeam);
             recalculateTeamStrength(playerTeam);
             recordTransfer(p, playerTeam.name, askingPrice);
-            transferLog.push(`${icon('cycle')} <strong>${fromTeam.name}</strong> → <strong>${playerTeam.name}</strong>: ${p.firstName} ${p.lastName} per <strong>${askingPrice.toFixed(1)}M€</strong>`);
+            transferLog.push(`${icon('cycle')} <strong>${fromTeam.name}</strong> → <strong>${playerTeam.name}</strong>: ${p.firstName} ${p.lastName} (${p.age} anni, Forza: ${p.strength}) per <strong>${askingPrice.toFixed(1)}M€</strong>`);
             boughtIds.add(id);
             turnConsumed = true;
           }
@@ -10562,8 +12300,19 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
             signPreContract(cand.player, cand.fromTeam, playerTeam);
             turnConsumed = true;
           }
+        } else if (action === 'rosa-expand-actions') {
+          rosaExpandedId = rosaExpandedId === id ? null : id;
         } else if (action === 'rosa-toggle-renew') {
           rosaRowPanel.set(id, rosaRowPanel.get(id) === 'renew' ? null : 'renew');
+        } else if (action === 'rosa-toggle-transfer-list') {
+          // Azione gratuita, non consuma il turno (turnConsumed resta false):
+          // marca/smarca solo la disponibilità, la CPU valuterà l'offerta ai
+          // suoi turni successivi (vedi findOfferCandidateForPlayerSurplus).
+          if (playerTransferListed.has(id)) playerTransferListed.delete(id);
+          else playerTransferListed.add(id);
+        } else if (action === 'rosa-toggle-loan-list') {
+          if (playerLoanListed.has(id)) playerLoanListed.delete(id);
+          else playerLoanListed.add(id);
         } else if (action === 'rosa-open-sell') {
           const p = playerTeam.roster.find(x => x.id === id);
           if (p) {
@@ -10576,6 +12325,7 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
               (idx) => {
                 if (idx >= 0) {
                   executeSellOffer(p, offers[idx]); rosaSellOffers.delete(id); invalidatePendingOfferFor(id); soldIds.add(id);
+                  if (rosaExpandedId === id) rosaExpandedId = null;
                   if (turnCtx) { overlay.remove(); turnCtx.onTurnConsumed(); return; }
                 }
                 render();
@@ -10594,6 +12344,7 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
               (idx) => {
                 if (idx >= 0 && canLoanOutPlayer(playerTeam, p)) {
                   executeLoanOutTo(p, offers[idx].team); rosaLoanOffers.delete(id); invalidatePendingOfferFor(id);
+                  if (rosaExpandedId === id) rosaExpandedId = null;
                   if (turnCtx) { overlay.remove(); turnCtx.onTurnConsumed(); return; }
                 }
                 render();
@@ -10620,6 +12371,7 @@ function showManagerMarketModal(onConfirm, turnCtx = null, renewalGate = null) {
           const p = playerTeam.roster.find(x => x.id === id);
           if (p && executeEarlyRelease(p)) {
             rosaRowPanel.delete(id);
+            if (rosaExpandedId === id) rosaExpandedId = null;
             if (pendingRenewals.some(r => r.id === id)) renewalDecisions.set(id, 'released');
             invalidatePendingOfferFor(id);
             turnConsumed = true;
