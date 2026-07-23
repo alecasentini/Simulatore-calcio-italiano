@@ -1421,7 +1421,9 @@ const FORMATIONS = {
   '4-3-3': { POR: 1, DIF: 2, TER: 2, CEN: 3, ALA: 2, ATT: 1 },
   '3-5-2': { POR: 1, DIF: 3, EST: 2, CEN: 3, ATT: 2 },
   '4-2-4': { POR: 1, DIF: 2, TER: 2, MED: 2, ALA: 2, ATT: 2 },
-  '5-3-2': { POR: 1, DIF: 3, TER: 2, MED: 1, CEN: 2, ATT: 2 },
+  // 3 centrocampisti centrali puri (§ bug segnalato dall'utente: era
+  // identico a 5-1-2-2, che invece ha 1 mediano basso + 2 centrali).
+  '5-3-2': { POR: 1, DIF: 3, TER: 2, CEN: 3, ATT: 2 },
   '4-5-1': { POR: 1, DIF: 2, TER: 2, MED: 1, CEN: 2, EST: 2, ATT: 1 },
   '3-4-3': { POR: 1, DIF: 3, EST: 2, CEN: 2, ALA: 2, ATT: 1 },
   '3-1-4-2': { POR: 1, DIF: 3, MED: 1, CEN: 2, EST: 2, ATT: 2 },
@@ -1453,7 +1455,10 @@ const FORMATION_PAIRS = [
   ['3-5-2', '5-3-2'], ['3-5-2', '4-5-1'], ['3-5-2', '3-4-3'], ['3-5-2', '3-1-4-2'],
   ['3-5-2', '3-4-1-2'], ['3-5-2', '3-4-2-1'], ['3-5-2', '5-1-2-2'], ['3-5-2', '5-4-1'],
   ['4-2-4', '4-2-2-2'], ['4-2-4', '4-2-1-3'], ['4-2-4', '4-1-2-3'],
-  ['5-3-2', '4-5-1'], ['5-3-2', '3-1-4-2'], ['5-3-2', '4-1-2-1-2'], ['5-3-2', '4-1-2-3'],
+  // 4-5-1/3-1-4-2/4-1-2-3 rimossi da qui (§ ridisegno 5-3-2 sopra: con 3 CEN
+  // invece di MED+2 CEN, differirebbero ora per 3 ruoli invece di 2 — non più
+  // una coppia tatticamente coerente, vedi il commento su FORMATION_PAIRS).
+  ['5-3-2', '4-1-2-1-2'],
   ['5-3-2', '5-1-2-2'], ['5-3-2', '5-4-1'], ['5-3-2', '5-1-3-1'],
   ['4-5-1', '3-1-4-2'], ['4-5-1', '4-1-2-1-2'], ['4-5-1', '4-1-2-3'], ['4-5-1', '5-1-2-2'],
   ['4-5-1', '5-4-1'], ['4-5-1', '5-1-3-1'],
@@ -8667,18 +8672,41 @@ function updateTeamStrengths(standingsA, standingsB, standingsC, newSerieA, newS
   // include già il prestito dei giovani in esubero come una delle opzioni.
 
   // --- STEP 4: MAGNATI ---
-  allTeams.forEach(team => {
-    if (team.magnate) {
-      team.magnateDuration--;
-      const injection = Math.floor(Math.random() * 40) + 30;
-      team.budget += injection;
-      if (team.magnateDuration <= 0) team.magnate = false;
-    } else if (Math.random() < 0.02) {
-      team.magnate = true;
-      team.magnateDuration = Math.floor(Math.random() * 8) + 3;
-      team.budget += 100;
-    }
-  });
+  // window.DISABLE_MAGNATE: interruttore di solo test (§ richiesta esplicita
+  // dell'utente per isolare l'accumulo di budget "naturale" da mercato/premi/
+  // stipendi negli anni, senza l'iniezione di un magnate a falsare i numeri).
+  // Di default assente/false: nessuna differenza per il gioco normale.
+  //
+  // Iniezione iniziale e rendita annua scalate per lega (§ richiesta esplicita
+  // dell'utente: 100M€ fissi per chiunque erano spropositati per una Serie C,
+  // che parte con budget medio ~10M€ e tetto di carry-over 50M€). La rendita
+  // ricorrente usa la lega ATTUALE della squadra (team.leagueLevel, già
+  // aggiornato più sopra prima di questo STEP) — un magnate che segue la sua
+  // squadra promossa/retrocessa cambia fascia di rendita l'anno successivo,
+  // non resta fisso su quella di quando è "arrivato".
+  if (!window.DISABLE_MAGNATE) {
+    const MAGNATE_TIERS = {
+      A: { initial: 100, recurringMin: 30, recurringMax: 70 },
+      B: { initial: 50, recurringMin: 15, recurringMax: 30 },
+      C: { initial: 20, recurringMin: 5, recurringMax: 10 },
+    };
+    allTeams.forEach(team => {
+      const tier = MAGNATE_TIERS[team.leagueLevel] || MAGNATE_TIERS.C;
+      if (team.magnate) {
+        team.magnateDuration--;
+        const span = tier.recurringMax - tier.recurringMin + 1;
+        const injection = Math.floor(Math.random() * span) + tier.recurringMin;
+        team.budget += injection;
+        if (team.magnateDuration <= 0) team.magnate = false;
+      } else if (Math.random() < 0.02) {
+        team.magnate = true;
+        // Almeno 3 stagioni di rendita garantita (mai un ciclo che finisce
+        // prima di aver mai pagato la rendita ricorrente almeno una volta).
+        team.magnateDuration = Math.floor(Math.random() * 8) + 3;
+        team.budget += tier.initial;
+      }
+    });
+  }
 
   // Aggiorna storico stagioni
   allTeams.forEach(team => {
@@ -10035,6 +10063,38 @@ function takeTurnMarketAction(team, ctx) {
   return null;
 }
 
+// Anti-throttling scheda in background (§ discussione esplicita con
+// l'utente): i browser rallentano pesantemente i setTimeout di una scheda
+// non visibile/in focus (fino a >1s di ritardo, o quasi in pausa), per
+// risparmiare batteria/CPU — lo scheduler del mercato (TICK_DELAY_MS=25 più
+// sotto) sembra quindi "bloccarsi" se non si guarda la pagina mentre il
+// mercato avanza. Un oscillatore audio silenzioso (guadagno quasi nullo, non
+// zero puro per non farlo "ottimizzare via") tiene la scheda classificata
+// come "attiva" dal browser, riducendo drasticamente questo throttling —
+// stesso trucco usato da molti giochi web. Richiede un gesto utente per
+// partire (autoplay policy): agganciato al primo click in assoluto sulla
+// pagina, non solo all'apertura del mercato, così è già attivo per qualunque
+// sessione di gioco.
+let _bgKeepAliveCtx = null;
+function ensureBackgroundKeepAlive() {
+  if (_bgKeepAliveCtx) {
+    if (_bgKeepAliveCtx.state === 'suspended') _bgKeepAliveCtx.resume().catch(() => {});
+    return;
+  }
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    _bgKeepAliveCtx = new AudioCtx();
+    const oscillator = _bgKeepAliveCtx.createOscillator();
+    const gain = _bgKeepAliveCtx.createGain();
+    gain.gain.value = 0.0001;
+    oscillator.connect(gain);
+    gain.connect(_bgKeepAliveCtx.destination);
+    oscillator.start();
+  } catch (e) { /* nessun impatto sul gioco, solo niente mitigazione al throttling */ }
+}
+document.addEventListener('click', ensureBackgroundKeepAlive, { once: true });
+
 // Punto d'ingresso dello scheduler. maxRounds è anche la durata calendariale
 // del mercato in giorni (§ discussione esplicita con l'utente: 60 giorni
 // l'estivo, 30 l'invernale — vedi formatMarketDay/updateMarketDayCounter, che
@@ -10063,6 +10123,10 @@ function runTurnBasedMarket(onComplete = () => {}, maxRounds = 60) {
   // null): senza questo, il mercato proseguiva comunque in background ma senza
   // nessun feedback visivo — sembrava bloccato mentre in realtà avanzava.
   showMarketProgressBar();
+  // Richiama anche qui (oltre che al primo click pagina): se il browser ha
+  // sospeso l'AudioContext per inattività, lo rimette in moto proprio quando
+  // serve di più, all'avvio dello scheduler.
+  ensureBackgroundKeepAlive();
   // Ritardo tra un turno CPU automatico e il successivo: puramente di ritmo/
   // percezione (nessuna logica dipende da questo), lascia respirare il
   // ticker e la barra invece di risolvere l'intero mercato in un solo tick
